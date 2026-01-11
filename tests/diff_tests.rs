@@ -289,3 +289,185 @@ fn test_edit_existing_file_not_created_by_us() {
     assert_eq!(added, 2, "Should add 2 lines");
     assert_eq!(removed, 0, "Should remove 0 lines");
 }
+
+#[test]
+fn test_edit_same_line_twice() {
+    // Scenario: Existing 5-line file, edit line 3, then edit line 3 again
+    // Net effect: original line3 replaced with final3 = +1 -1
+    let test_file = std::env::temp_dir().join(format!("test_edit_same_line_twice_{}.txt", unique_id()));
+
+    // File exists with 5 lines, final state has line3 changed to "final3"
+    let final_content = "line1\nline2\nfinal3\nline4\nline5\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    // Transcript:
+    // 1. First edit: line3 -> modified3
+    // 2. Second edit: modified3 -> final3
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "line3\n", "modified3\n"),
+        &edit_entry(test_file.to_str().unwrap(), "modified3\n", "final3\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    // Net change: one line replaced (line3 -> final3)
+    assert_eq!(added, 1, "Should add 1 line (same line edited twice)");
+    assert_eq!(removed, 1, "Should remove 1 line (same line edited twice)");
+}
+
+#[test]
+fn test_edit_then_revert() {
+    // Scenario: Edit line3 -> modified3 -> line3 (revert to original)
+    // Net effect: no change, +0 -0
+    let test_file = std::env::temp_dir().join(format!("test_edit_revert_{}.txt", unique_id()));
+
+    let final_content = "line1\nline2\nline3\nline4\nline5\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "line3\n", "modified3\n"),
+        &edit_entry(test_file.to_str().unwrap(), "modified3\n", "line3\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 0, "Should add 0 lines (reverted to original)");
+    assert_eq!(removed, 0, "Should remove 0 lines (reverted to original)");
+}
+
+#[test]
+fn test_three_chained_edits() {
+    // Scenario: line3 -> A -> B -> final3 (three chained edits)
+    // Net effect: one line replaced, +1 -1
+    let test_file = std::env::temp_dir().join(format!("test_three_chain_{}.txt", unique_id()));
+
+    let final_content = "line1\nline2\nfinal3\nline4\nline5\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "line3\n", "A\n"),
+        &edit_entry(test_file.to_str().unwrap(), "A\n", "B\n"),
+        &edit_entry(test_file.to_str().unwrap(), "B\n", "final3\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 1, "Should add 1 line (three chained edits)");
+    assert_eq!(removed, 1, "Should remove 1 line (three chained edits)");
+}
+
+#[test]
+fn test_two_independent_edit_chains() {
+    // Scenario: Edit line1 twice AND edit line5 twice (independent chains)
+    // Net effect: two lines replaced, +2 -2
+    let test_file = std::env::temp_dir().join(format!("test_two_chains_{}.txt", unique_id()));
+
+    let final_content = "final1\nline2\nline3\nline4\nfinal5\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        // Chain 1: line1 -> mid1 -> final1
+        &edit_entry(test_file.to_str().unwrap(), "line1\n", "mid1\n"),
+        &edit_entry(test_file.to_str().unwrap(), "mid1\n", "final1\n"),
+        // Chain 2: line5 -> mid5 -> final5
+        &edit_entry(test_file.to_str().unwrap(), "line5\n", "mid5\n"),
+        &edit_entry(test_file.to_str().unwrap(), "mid5\n", "final5\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 2, "Should add 2 lines (two independent chains)");
+    assert_eq!(removed, 2, "Should remove 2 lines (two independent chains)");
+}
+
+#[test]
+fn test_edit_adds_then_removes_lines() {
+    // Scenario: "a\n" -> "a\nb\nc\n" -> "a\nb\n"
+    // Net effect: added 1 line, +1 -0
+    let test_file = std::env::temp_dir().join(format!("test_add_remove_{}.txt", unique_id()));
+
+    fs::write(&test_file, "exists").unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "a\n", "a\nb\nc\n"),
+        &edit_entry(test_file.to_str().unwrap(), "a\nb\nc\n", "a\nb\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 1, "Should add 1 line (net after add then remove)");
+    assert_eq!(removed, 0, "Should remove 0 lines (net after add then remove)");
+}
+
+#[test]
+fn test_write_then_edit_written_content() {
+    // Scenario: Write "a\nb\nc\n", then edit "b\n" -> "x\n"
+    // Final file: "a\nx\nc\n" (3 lines from empty)
+    // Net effect: +3 -0
+    let test_file = std::env::temp_dir().join(format!("test_write_edit_{}.txt", unique_id()));
+
+    let final_content = "a\nx\nc\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        &write_entry(test_file.to_str().unwrap(), "", "a\nb\nc\n"),
+        &edit_entry(test_file.to_str().unwrap(), "b\n", "x\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    // Write created 3 lines from empty, edit replaced one of them
+    // Net from original empty file: 3 lines added
+    assert_eq!(added, 3, "Should add 3 lines (net change from empty)");
+    assert_eq!(removed, 0, "Should remove 0 lines (net change from empty)");
+}
+
+#[test]
+fn test_edit_to_empty() {
+    // Scenario: Delete content via edit "line3\n" -> ""
+    // Net effect: -1 line
+    let test_file = std::env::temp_dir().join(format!("test_edit_empty_{}.txt", unique_id()));
+
+    fs::write(&test_file, "exists").unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "line3\n", ""),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 0, "Should add 0 lines");
+    assert_eq!(removed, 1, "Should remove 1 line (deleted via edit)");
+}
+
+#[test]
+fn test_edit_from_empty() {
+    // Scenario: Insert content via edit "" -> "new\n"
+    // Net effect: +1 line
+    let test_file = std::env::temp_dir().join(format!("test_edit_insert_{}.txt", unique_id()));
+
+    fs::write(&test_file, "exists").unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "", "new\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 1, "Should add 1 line (inserted via edit)");
+    assert_eq!(removed, 0, "Should remove 0 lines");
+}
+
+#[test]
+fn test_write_then_chained_edits() {
+    // Scenario: Write "a\nb\nc\n", then edit "b\n" -> "x\n", then edit "x\n" -> "y\n"
+    // Both edits should apply to the written content
+    // Final file: "a\ny\nc\n" (3 lines from empty)
+    // Net effect: +3 -0
+    let test_file = std::env::temp_dir().join(format!("test_write_chain_edit_{}.txt", unique_id()));
+
+    let final_content = "a\ny\nc\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        &write_entry(test_file.to_str().unwrap(), "", "a\nb\nc\n"),
+        &edit_entry(test_file.to_str().unwrap(), "b\n", "x\n"),
+        &edit_entry(test_file.to_str().unwrap(), "x\n", "y\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 3, "Should add 3 lines (net change from empty)");
+    assert_eq!(removed, 0, "Should remove 0 lines (net change from empty)");
+}

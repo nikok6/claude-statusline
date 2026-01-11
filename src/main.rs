@@ -84,9 +84,9 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
     // Track per-file: (original content at first touch, last content we wrote)
     let mut file_originals: HashMap<String, String> = HashMap::new();
     let mut file_finals: HashMap<String, String> = HashMap::new();
-    // Track cumulative deltas from Edit operations
-    let mut edit_added: usize = 0;
-    let mut edit_removed: usize = 0;
+    // Track edit chains: maps current content -> original content
+    // When edits chain (edit2.old == edit1.new), we track back to the original
+    let mut edit_chains: HashMap<String, String> = HashMap::new();
 
     for line in reader.lines().flatten() {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
@@ -99,19 +99,40 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
                             .or_insert_with(|| result.original_file.clone().unwrap_or_default());
                         file_finals.insert(file_path.clone(), content.clone());
                     }
-                    // Edit tool: just track the delta (newString - oldString)
+                    // Edit tool: track chains of edits to compute net change
                     else if let (Some(old_str), Some(new_str)) = (&result.old_string, &result.new_string) {
-                        let (a, r) = compute_diff_strings(&tmp_dir, old_str, new_str);
-                        edit_added += a;
-                        edit_removed += r;
+                        // Check if this edit applies to content we wrote
+                        let applied_to_write = if let Some(final_content) = file_finals.get_mut(file_path) {
+                            if final_content.contains(old_str.as_str()) {
+                                *final_content = final_content.replacen(old_str, new_str, 1);
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        // If not applied to written content, track in edit chains
+                        if !applied_to_write {
+                            let original = edit_chains.remove(old_str).unwrap_or_else(|| old_str.clone());
+                            edit_chains.insert(new_str.clone(), original);
+                        }
                     }
                 }
             }
         }
     }
 
-    let mut added = edit_added;
-    let mut removed = edit_removed;
+    let mut added = 0;
+    let mut removed = 0;
+
+    // Compute diffs for Edit chains (original vs final for each chain)
+    for (final_content, original) in &edit_chains {
+        let (a, r) = compute_diff_strings(&tmp_dir, original, final_content);
+        added += a;
+        removed += r;
+    }
 
     // Compute diffs for Write operations (original vs final)
     for (file_path, original) in &file_originals {
