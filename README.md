@@ -38,6 +38,12 @@ cargo build --release
 cp target/release/statusline ~/.claude/statusline
 ```
 
+## Testing
+
+```bash
+cargo test -- --test-threads=1
+```
+
 ## Features
 
 - Git branch name

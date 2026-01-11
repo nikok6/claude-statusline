@@ -51,6 +51,10 @@ struct ToolUseResult {
     #[serde(rename = "originalFile")]
     original_file: Option<String>,
     content: Option<String>,
+    #[serde(rename = "oldString")]
+    old_string: Option<String>,
+    #[serde(rename = "newString")]
+    new_string: Option<String>,
 }
 
 fn get_git_branch(cwd: &str) -> String {
@@ -70,50 +74,73 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
         Err(_) => return (0, 0),
     };
 
-    let reader = BufReader::new(file);
-    let mut file_originals: HashMap<String, String> = HashMap::new();
-
-    for line in reader.lines().flatten() {
-        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
-            if let Some(result) = entry.tool_use_result {
-                if let Some(file_path) = result.file_path {
-                    if result.original_file.is_some() || result.content.is_some() {
-                        file_originals
-                            .entry(file_path)
-                            .or_insert_with(|| result.original_file.unwrap_or_default());
-                    }
-                }
-            }
-        }
-    }
-
     let tmp_dir = match std::env::temp_dir().join("statusline").to_str() {
         Some(s) => s.to_string(),
         None => return (0, 0),
     };
     let _ = fs::create_dir_all(&tmp_dir);
 
-    let mut added = 0;
-    let mut removed = 0;
+    let reader = BufReader::new(file);
+    // Track per-file: (original content at first touch, last content we wrote)
+    let mut file_originals: HashMap<String, String> = HashMap::new();
+    let mut file_finals: HashMap<String, String> = HashMap::new();
+    // Track cumulative deltas from Edit operations
+    let mut edit_added: usize = 0;
+    let mut edit_removed: usize = 0;
 
+    for line in reader.lines().flatten() {
+        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
+            if let Some(result) = entry.tool_use_result {
+                if let Some(ref file_path) = result.file_path {
+                    // Write tool: track original and final content
+                    if let Some(ref content) = result.content {
+                        file_originals
+                            .entry(file_path.clone())
+                            .or_insert_with(|| result.original_file.clone().unwrap_or_default());
+                        file_finals.insert(file_path.clone(), content.clone());
+                    }
+                    // Edit tool: just track the delta (newString - oldString)
+                    else if let (Some(old_str), Some(new_str)) = (&result.old_string, &result.new_string) {
+                        let (a, r) = compute_diff_strings(&tmp_dir, old_str, new_str);
+                        edit_added += a;
+                        edit_removed += r;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut added = edit_added;
+    let mut removed = edit_removed;
+
+    // Compute diffs for Write operations (original vs final)
     for (file_path, original) in &file_originals {
+        // If file was deleted, skip it (net effect is zero for files we created)
         if !std::path::Path::new(file_path).exists() {
-            removed += original.lines().filter(|l| !l.is_empty()).count();
             continue;
         }
 
-        let tmp_original = format!("{}/original", tmp_dir);
-        if fs::write(&tmp_original, original).is_err() {
-            continue;
-        }
+        let final_content = match file_finals.get(file_path) {
+            Some(content) => content,
+            None => continue,
+        };
 
-        let (a, r) = compute_diff(&tmp_original, file_path);
+        let (a, r) = compute_diff_strings(&tmp_dir, original, final_content);
         added += a;
         removed += r;
     }
 
     let _ = fs::remove_dir_all(&tmp_dir);
     (added, removed)
+}
+
+fn compute_diff_strings(tmp_dir: &str, old: &str, new: &str) -> (usize, usize) {
+    let tmp_old = format!("{}/old", tmp_dir);
+    let tmp_new = format!("{}/new", tmp_dir);
+    if fs::write(&tmp_old, old).is_err() || fs::write(&tmp_new, new).is_err() {
+        return (0, 0);
+    }
+    compute_diff(&tmp_old, &tmp_new)
 }
 
 fn compute_diff(original_file: &str, current_file: &str) -> (usize, usize) {
