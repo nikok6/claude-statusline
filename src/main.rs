@@ -4,13 +4,57 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::process::Command;
 
-// ANSI colors (Catppuccin 256-color)
-const COLOR_BRANCH: &str = "\x1b[38;5;111m";
-const COLOR_ADDED: &str = "\x1b[38;5;151m";
-const COLOR_REMOVED: &str = "\x1b[38;5;211m";
-const COLOR_MODEL: &str = "\x1b[38;5;183m";
-const COLOR_TOKENS: &str = "\x1b[38;5;216m";
+// ANSI colors - Light mode (Catppuccin Latte 256-color)
+const COLOR_BRANCH_LIGHT: &str = "\x1b[38;5;32m";
+const COLOR_ADDED_LIGHT: &str = "\x1b[38;5;71m";
+const COLOR_REMOVED_LIGHT: &str = "\x1b[38;5;131m";
+const COLOR_MODEL_LIGHT: &str = "\x1b[38;5;97m";
+const COLOR_TOKENS_LIGHT: &str = "\x1b[38;5;173m";
+
+// ANSI colors - Dark mode (Catppuccin Mocha 256-color)
+const COLOR_BRANCH_DARK: &str = "\x1b[38;5;117m";
+const COLOR_ADDED_DARK: &str = "\x1b[38;5;114m";
+const COLOR_REMOVED_DARK: &str = "\x1b[38;5;210m";
+const COLOR_MODEL_DARK: &str = "\x1b[38;5;183m";
+const COLOR_TOKENS_DARK: &str = "\x1b[38;5;215m";
+
 const COLOR_RESET: &str = "\x1b[0m";
+
+struct Colors {
+    branch: &'static str,
+    added: &'static str,
+    removed: &'static str,
+    model: &'static str,
+    tokens: &'static str,
+}
+
+fn detect_theme() -> Colors {
+    let is_light = std::env::var("HOME")
+        .ok()
+        .and_then(|home| fs::read_to_string(format!("{}/.claude.json", home)).ok())
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|json| json.get("theme").and_then(|v| v.as_str()).map(String::from))
+        .map(|theme| theme.contains("light"))
+        .unwrap_or(false);
+
+    if is_light {
+        Colors {
+            branch: COLOR_BRANCH_LIGHT,
+            added: COLOR_ADDED_LIGHT,
+            removed: COLOR_REMOVED_LIGHT,
+            model: COLOR_MODEL_LIGHT,
+            tokens: COLOR_TOKENS_LIGHT,
+        }
+    } else {
+        Colors {
+            branch: COLOR_BRANCH_DARK,
+            added: COLOR_ADDED_DARK,
+            removed: COLOR_REMOVED_DARK,
+            model: COLOR_MODEL_DARK,
+            tokens: COLOR_TOKENS_DARK,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct Input {
@@ -181,7 +225,7 @@ fn compute_diff(original_file: &str, current_file: &str) -> (usize, usize) {
     (added, removed)
 }
 
-fn get_token_info(input: &Input) -> String {
+fn get_token_info(input: &Input, colors: &Colors) -> String {
     let ctx = match &input.context_window {
         Some(c) => c,
         None => return String::new(),
@@ -210,7 +254,7 @@ fn get_token_info(input: &Input) -> String {
 
     format!(
         "{}{} {}k/{}k tokens{}",
-        COLOR_TOKENS, bar, current_k, size_k, COLOR_RESET
+        colors.tokens, bar, current_k, size_k, COLOR_RESET
     )
 }
 
@@ -220,17 +264,18 @@ fn main() {
         Err(_) => std::process::exit(1),
     };
 
+    let colors = detect_theme();
     let git_branch = get_git_branch(&input.cwd);
     let model_name = &input.model.display_name;
     let (added, removed) = calculate_net_diff(&input.transcript_path);
-    let token_info = get_token_info(&input);
+    let token_info = get_token_info(&input, &colors);
 
     println!(
         "{}{}{} | {}+{}{} {}-{}{} | {}{}{} | {}",
-        COLOR_BRANCH, git_branch, COLOR_RESET,
-        COLOR_ADDED, added, COLOR_RESET,
-        COLOR_REMOVED, removed, COLOR_RESET,
-        COLOR_MODEL, model_name, COLOR_RESET,
+        colors.branch, git_branch, COLOR_RESET,
+        colors.added, added, COLOR_RESET,
+        colors.removed, removed, COLOR_RESET,
+        colors.model, model_name, COLOR_RESET,
         token_info
     );
 }
