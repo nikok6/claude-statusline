@@ -451,6 +451,43 @@ fn test_edit_from_empty() {
 }
 
 #[test]
+fn test_edited_file_then_deleted() {
+    // Scenario: Pre-existing file we edited gets deleted
+    // We edit a file we didn't create, then it gets deleted
+    // Net effect: +0 -0 (our edits don't matter since file is gone)
+    let test_file = std::env::temp_dir().join(format!("test_edit_deleted_{}.txt", unique_id()));
+
+    // File does NOT exist on disk (deleted)
+    let _ = fs::remove_file(&test_file);
+
+    // Transcript shows we edited it (but we didn't create it - no Write with empty original)
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "old\n", "old\nnew1\nnew2\nnew3\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 0, "Should add 0 lines (edited file was deleted)");
+    assert_eq!(removed, 0, "Should remove 0 lines (edited file was deleted)");
+}
+
+#[test]
+fn test_whitespace_only_change() {
+    // Scenario: Edit "  foo\n" to "foo\n" (whitespace-only change)
+    // Should still count as +1 -1 since the line content changed
+    let test_file = std::env::temp_dir().join(format!("test_whitespace_{}.txt", unique_id()));
+
+    fs::write(&test_file, "exists").unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "  foo\n", "foo\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    assert_eq!(added, 1, "Should add 1 line (whitespace change)");
+    assert_eq!(removed, 1, "Should remove 1 line (whitespace change)");
+}
+
+#[test]
 fn test_write_then_chained_edits() {
     // Scenario: Write "a\nb\nc\n", then edit "b\n" -> "x\n", then edit "x\n" -> "y\n"
     // Both edits should apply to the written content

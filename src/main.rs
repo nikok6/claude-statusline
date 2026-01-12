@@ -84,9 +84,9 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
     // Track per-file: (original content at first touch, last content we wrote)
     let mut file_originals: HashMap<String, String> = HashMap::new();
     let mut file_finals: HashMap<String, String> = HashMap::new();
-    // Track edit chains: maps current content -> original content
+    // Track edit chains: maps current content -> (original content, file_path)
     // When edits chain (edit2.old == edit1.new), we track back to the original
-    let mut edit_chains: HashMap<String, String> = HashMap::new();
+    let mut edit_chains: HashMap<String, (String, String)> = HashMap::new();
 
     for line in reader.lines().flatten() {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
@@ -115,8 +115,9 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
 
                         // If not applied to written content, track in edit chains
                         if !applied_to_write {
-                            let original = edit_chains.remove(old_str).unwrap_or_else(|| old_str.clone());
-                            edit_chains.insert(new_str.clone(), original);
+                            let (original, path) = edit_chains.remove(old_str)
+                                .unwrap_or_else(|| (old_str.clone(), file_path.clone()));
+                            edit_chains.insert(new_str.clone(), (original, path));
                         }
                     }
                 }
@@ -128,7 +129,11 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
     let mut removed = 0;
 
     // Compute diffs for Edit chains (original vs final for each chain)
-    for (final_content, original) in &edit_chains {
+    for (final_content, (original, file_path)) in &edit_chains {
+        // Skip if file was deleted
+        if !std::path::Path::new(file_path).exists() {
+            continue;
+        }
         let (a, r) = compute_diff_strings(&tmp_dir, original, final_content);
         added += a;
         removed += r;
@@ -204,7 +209,7 @@ fn get_token_info(input: &Input) -> String {
     let size_k = size / 1000;
 
     format!(
-        "{}{}  {}k/{}k tokens{}",
+        "{}{} {}k/{}k tokens{}",
         COLOR_TOKENS, bar, current_k, size_k, COLOR_RESET
     )
 }
