@@ -508,3 +508,61 @@ fn test_write_then_chained_edits() {
     assert_eq!(added, 3, "Should add 3 lines (net change from empty)");
     assert_eq!(removed, 0, "Should remove 0 lines (net change from empty)");
 }
+
+#[test]
+fn test_add_then_remove_existing_file() {
+    // Scenario: Existing file, add 10 lines, add 10 more, remove 6
+    // Net effect: +14 -0
+    let test_file = std::env::temp_dir().join(format!("test_add_remove_existing_{}.txt", unique_id()));
+
+    // Final content: original 3 lines + 14 net added lines = 17 lines
+    let final_content = "line1\nline2\nline3\na1\na2\na3\na4\na5\na6\na7\na8\na9\na10\nb1\nb2\nb3\nb4\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        // Edit 1: add 10 lines after line3
+        &edit_entry(
+            test_file.to_str().unwrap(),
+            "line3\n",
+            "line3\na1\na2\na3\na4\na5\na6\na7\na8\na9\na10\n"
+        ),
+        // Edit 2: add 10 more lines after a10
+        &edit_entry(
+            test_file.to_str().unwrap(),
+            "a10\n",
+            "a10\nb1\nb2\nb3\nb4\nb5\nb6\nb7\nb8\nb9\nb10\n"
+        ),
+        // Edit 3: remove 6 lines (b5-b10)
+        &edit_entry(
+            test_file.to_str().unwrap(),
+            "b4\nb5\nb6\nb7\nb8\nb9\nb10\n",
+            "b4\n"
+        ),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    eprintln!("add then remove result: +{} -{}", added, removed);
+    // 10 + 10 - 6 = 14 net lines added, 0 removed from original
+    assert_eq!((added, removed), (14, 0), "Should be +14 -0");
+}
+
+#[test]
+fn test_edit_expands_existing_block() {
+    // Edit that expands 3 lines -> 6 lines
+    // Expected: +3 -0
+    let test_file = std::env::temp_dir().join(format!("test_expand_block_{}.txt", unique_id()));
+
+    let old_string = "# bun\nexport BUN_INSTALL=\"$HOME/.bun\"\nexport PATH=\"$BUN_INSTALL/bin:$PATH\"";
+
+    let new_string = "# bun\nexport BUN_INSTALL=\"$HOME/.bun\"\nexport PATH=\"$BUN_INSTALL/bin:$PATH\"\n\n# cargo/rust\nexport PATH=\"$HOME/.cargo/bin:$PATH\"";
+
+    fs::write(&test_file, new_string).unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), old_string, new_string),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    eprintln!("zshrc edit result: +{} -{}", added, removed);
+    assert_eq!((added, removed), (3, 0), "Should be +3 -0");
+}

@@ -176,7 +176,7 @@ fn get_git_branch(cwd: &str) -> String {
         .unwrap_or_else(|| "no-git".to_string())
 }
 
-fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, (String, String)>) {
+fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>) {
     let file = match File::open(transcript_path) {
         Ok(f) => f,
         Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
@@ -185,7 +185,7 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
     let reader = BufReader::new(file);
     let mut file_originals: HashMap<String, String> = HashMap::new();
     let mut file_finals: HashMap<String, String> = HashMap::new();
-    let mut edit_chains: HashMap<String, (String, String)> = HashMap::new();
+    let mut edit_chains: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
     for line in reader.lines().flatten() {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
@@ -209,9 +209,20 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
                         };
 
                         if !applied_to_write {
-                            let (original, path) = edit_chains.remove(old_str)
-                                .unwrap_or_else(|| (old_str.clone(), file_path.clone()));
-                            edit_chains.insert(new_str.clone(), (original, path));
+                            let chains = edit_chains.entry(file_path.clone()).or_default();
+                            let mut found = false;
+
+                            for (_original, current) in chains.iter_mut() {
+                                if current.contains(old_str.as_str()) {
+                                    *current = current.replacen(old_str, new_str, 1);
+                                    found = true;
+                                    break;
+                                }
+                            }
+
+                            if !found {
+                                chains.push((old_str.clone(), new_str.clone()));
+                            }
                         }
                     }
                 }
@@ -237,14 +248,16 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
     let mut removed = 0;
     let mut files = Vec::new();
 
-    for (final_content, (original, file_path)) in &edit_chains {
+    for (file_path, chains) in &edit_chains {
         if !std::path::Path::new(file_path).exists() {
             continue;
         }
         files.push(file_path.clone());
-        let (a, r) = compute_diff(original, final_content);
-        added += a;
-        removed += r;
+        for (original, final_content) in chains {
+            let (a, r) = compute_diff(original, final_content);
+            added += a;
+            removed += r;
+        }
     }
 
     for (file_path, original) in &file_originals {
@@ -275,7 +288,19 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
 }
 
 fn compute_diff(old: &str, new: &str) -> (usize, usize) {
-    let diff = TextDiff::from_lines(old, new);
+    // Normalize trailing newlines to avoid spurious diffs
+    let old_normalized = if old.is_empty() || old.ends_with('\n') {
+        old.to_string()
+    } else {
+        format!("{}\n", old)
+    };
+    let new_normalized = if new.is_empty() || new.ends_with('\n') {
+        new.to_string()
+    } else {
+        format!("{}\n", new)
+    };
+
+    let diff = TextDiff::from_lines(&old_normalized, &new_normalized);
     let mut added = 0;
     let mut removed = 0;
 
