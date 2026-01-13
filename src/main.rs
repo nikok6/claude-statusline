@@ -1,7 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader};
+use std::hash::{Hash, Hasher};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::process::Command;
 
 // ANSI colors - Light mode (Catppuccin Latte 256-color)
@@ -101,6 +103,68 @@ struct ToolUseResult {
     new_string: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct DiffCache {
+    byte_offset: u64,
+    added: usize,
+    removed: usize,
+    files: Vec<String>,
+}
+
+fn get_cache_path(transcript_path: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    transcript_path.hash(&mut hasher);
+    format!("/tmp/statusline_cache_{:x}.json", hasher.finish())
+}
+
+fn has_new_file_ops(transcript_path: &str, byte_offset: u64) -> bool {
+    let mut file = match File::open(transcript_path) {
+        Ok(f) => f,
+        Err(_) => return true,
+    };
+
+    // Seek to last known position
+    if file.seek(SeekFrom::Start(byte_offset)).is_err() {
+        return true;
+    }
+
+    // Read new content and check for filePath
+    let mut new_content = String::new();
+    if file.read_to_string(&mut new_content).is_err() {
+        return true;
+    }
+
+    // Fast string check - if "filePath" appears in new content, we have new file ops
+    new_content.contains("\"filePath\"")
+}
+
+fn get_file_size(path: &str) -> u64 {
+    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+fn load_cache(cache_path: &str, transcript_path: &str) -> Option<DiffCache> {
+    let content = fs::read_to_string(cache_path).ok()?;
+    let cache: DiffCache = serde_json::from_str(&content).ok()?;
+
+    // Check if any tracked file was deleted
+    if !cache.files.iter().all(|f| std::path::Path::new(f).exists()) {
+        return None;
+    }
+
+    // Check if there are new file operations since last cache
+    if has_new_file_ops(transcript_path, cache.byte_offset) {
+        return None;
+    }
+
+    Some(cache)
+}
+
+fn save_cache(cache_path: &str, cache: &DiffCache) {
+    if let Ok(content) = serde_json::to_string(cache) {
+        let _ = fs::write(cache_path, content);
+    }
+}
+
 fn get_git_branch(cwd: &str) -> String {
     Command::new("git")
         .args(["-C", cwd, "branch", "--show-current"])
@@ -112,40 +176,27 @@ fn get_git_branch(cwd: &str) -> String {
         .unwrap_or_else(|| "no-git".to_string())
 }
 
-fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
+fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, (String, String)>) {
     let file = match File::open(transcript_path) {
         Ok(f) => f,
-        Err(_) => return (0, 0),
+        Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
     };
-
-    let tmp_dir = match std::env::temp_dir().join("statusline").to_str() {
-        Some(s) => s.to_string(),
-        None => return (0, 0),
-    };
-    let _ = fs::create_dir_all(&tmp_dir);
 
     let reader = BufReader::new(file);
-    // Track per-file: (original content at first touch, last content we wrote)
     let mut file_originals: HashMap<String, String> = HashMap::new();
     let mut file_finals: HashMap<String, String> = HashMap::new();
-    // Track edit chains: maps current content -> (original content, file_path)
-    // When edits chain (edit2.old == edit1.new), we track back to the original
     let mut edit_chains: HashMap<String, (String, String)> = HashMap::new();
 
     for line in reader.lines().flatten() {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if let Some(result) = entry.tool_use_result {
                 if let Some(ref file_path) = result.file_path {
-                    // Write tool: track original and final content
                     if let Some(ref content) = result.content {
                         file_originals
                             .entry(file_path.clone())
                             .or_insert_with(|| result.original_file.clone().unwrap_or_default());
                         file_finals.insert(file_path.clone(), content.clone());
-                    }
-                    // Edit tool: track chains of edits to compute net change
-                    else if let (Some(old_str), Some(new_str)) = (&result.old_string, &result.new_string) {
-                        // Check if this edit applies to content we wrote
+                    } else if let (Some(old_str), Some(new_str)) = (&result.old_string, &result.new_string) {
                         let applied_to_write = if let Some(final_content) = file_finals.get_mut(file_path) {
                             if final_content.contains(old_str.as_str()) {
                                 *final_content = final_content.replacen(old_str, new_str, 1);
@@ -157,7 +208,6 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
                             false
                         };
 
-                        // If not applied to written content, track in edit chains
                         if !applied_to_write {
                             let (original, path) = edit_chains.remove(old_str)
                                 .unwrap_or_else(|| (old_str.clone(), file_path.clone()));
@@ -169,59 +219,73 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
         }
     }
 
+    (file_originals, file_finals, edit_chains)
+}
+
+fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
+    let cache_path = get_cache_path(transcript_path);
+
+    // Try cache first
+    if let Some(cache) = load_cache(&cache_path, transcript_path) {
+        return (cache.added, cache.removed);
+    }
+
+    // Cache miss: parse and compute
+    let (file_originals, file_finals, edit_chains) = parse_transcript(transcript_path);
+
     let mut added = 0;
     let mut removed = 0;
+    let mut files = Vec::new();
 
-    // Compute diffs for Edit chains (original vs final for each chain)
     for (final_content, (original, file_path)) in &edit_chains {
-        // Skip if file was deleted
         if !std::path::Path::new(file_path).exists() {
             continue;
         }
-        let (a, r) = compute_diff_strings(&tmp_dir, original, final_content);
+        files.push(file_path.clone());
+        let (a, r) = compute_diff(original, final_content);
         added += a;
         removed += r;
     }
 
-    // Compute diffs for Write operations (original vs final)
     for (file_path, original) in &file_originals {
-        // If file was deleted, skip it (net effect is zero for files we created)
         if !std::path::Path::new(file_path).exists() {
             continue;
         }
+        files.push(file_path.clone());
 
         let final_content = match file_finals.get(file_path) {
             Some(content) => content,
             None => continue,
         };
 
-        let (a, r) = compute_diff_strings(&tmp_dir, original, final_content);
+        let (a, r) = compute_diff(original, final_content);
         added += a;
         removed += r;
     }
 
-    let _ = fs::remove_dir_all(&tmp_dir);
+    // Save cache with current file size as byte offset
+    save_cache(&cache_path, &DiffCache {
+        byte_offset: get_file_size(transcript_path),
+        added,
+        removed,
+        files,
+    });
+
     (added, removed)
 }
 
-fn compute_diff_strings(tmp_dir: &str, old: &str, new: &str) -> (usize, usize) {
-    let tmp_old = format!("{}/old", tmp_dir);
-    let tmp_new = format!("{}/new", tmp_dir);
-    if fs::write(&tmp_old, old).is_err() || fs::write(&tmp_new, new).is_err() {
-        return (0, 0);
+fn compute_diff(old: &str, new: &str) -> (usize, usize) {
+    let diff = TextDiff::from_lines(old, new);
+    let mut added = 0;
+    let mut removed = 0;
+
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Insert => added += 1,
+            ChangeTag::Delete => removed += 1,
+            ChangeTag::Equal => {}
+        }
     }
-    compute_diff(&tmp_old, &tmp_new)
-}
-
-fn compute_diff(original_file: &str, current_file: &str) -> (usize, usize) {
-    let output = Command::new("diff")
-        .args([original_file, current_file])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-
-    let added = output.lines().filter(|l| l.starts_with('>')).count();
-    let removed = output.lines().filter(|l| l.starts_with('<')).count();
     (added, removed)
 }
 

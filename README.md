@@ -41,7 +41,7 @@ cp target/release/statusline ~/.claude/statusline
 ## Testing
 
 ```bash
-cargo test -- --test-threads=1
+cargo test
 ```
 
 ## Features
