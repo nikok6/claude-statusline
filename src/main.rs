@@ -334,15 +334,14 @@ fn get_token_info(input: &Input, colors: &Colors) -> String {
         })
         .unwrap_or(0);
 
-    let pct = (current * 100) / size;
-    let filled = (pct / 20) as usize;
-    let bar: String = "\u{25B0}".repeat(filled) + &"\u{25B1}".repeat(5 - filled);
+    let filled = ((current * 8) / size) as usize;
+    let bar: String = "█".repeat(filled) + &"░".repeat(8 - filled);
 
     let current_k = current / 1000;
     let size_k = size / 1000;
 
     format!(
-        "{}{} {}k/{}k tokens{}",
+        "{}{} {}k/{}k{}",
         colors.tokens, bar, current_k, size_k, COLOR_RESET
     )
 }
