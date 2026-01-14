@@ -9,7 +9,7 @@ main | +249 -9 | Opus 4.5 | ▰▱▱▱▱  79k/200k tokens
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nikok6/dotfiles/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nikok6/claude-statusline/main/install.sh | bash
 ```
 
 Or download the binary manually from [Releases](https://github.com/nikok6/claude-statusline/releases).
