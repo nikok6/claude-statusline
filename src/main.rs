@@ -182,6 +182,10 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
         Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
     };
 
+    let plans_dir = std::env::var("HOME")
+        .map(|h| format!("{}/.claude/plans", h))
+        .unwrap_or_default();
+
     let reader = BufReader::new(file);
     let mut file_originals: HashMap<String, String> = HashMap::new();
     let mut file_finals: HashMap<String, String> = HashMap::new();
@@ -191,6 +195,10 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if let Some(result) = entry.tool_use_result {
                 if let Some(ref file_path) = result.file_path {
+                    // Skip files in ~/.claude/plans
+                    if !plans_dir.is_empty() && file_path.starts_with(&plans_dir) {
+                        continue;
+                    }
                     if let Some(ref content) = result.content {
                         file_originals
                             .entry(file_path.clone())

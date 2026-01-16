@@ -566,3 +566,37 @@ fn test_edit_expands_existing_block() {
     eprintln!("zshrc edit result: +{} -{}", added, removed);
     assert_eq!((added, removed), (3, 0), "Should be +3 -0");
 }
+
+#[test]
+fn test_plans_directory_excluded() {
+    // Scenario: Files in ~/.claude/plans should be excluded from diff tracking
+    // Write to both a regular file and a plans file, only regular file should count
+    let home = std::env::var("HOME").expect("HOME not set");
+    let plans_dir = format!("{}/.claude/plans", home);
+    let _ = fs::create_dir_all(&plans_dir);
+
+    let regular_file = std::env::temp_dir().join(format!("test_regular_{}.txt", unique_id()));
+    let plans_file = format!("{}/test_plan_{}.md", plans_dir, unique_id());
+
+    // Create both files on disk
+    let regular_content = "line1\nline2\nline3\n";
+    let plans_content = "# Plan\n## Step 1\n## Step 2\n## Step 3\n## Step 4\n";
+    fs::write(&regular_file, regular_content).unwrap();
+    fs::write(&plans_file, plans_content).unwrap();
+
+    // Transcript has writes for both files
+    let transcript = create_test_transcript(&[
+        &write_entry(regular_file.to_str().unwrap(), "", regular_content),
+        &write_entry(&plans_file, "", plans_content),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, regular_file.to_str().unwrap());
+
+    // Clean up plans file
+    let _ = fs::remove_file(&plans_file);
+
+    // Only regular file should count: +3 lines
+    // Plans file (+5 lines) should be excluded
+    assert_eq!(added, 3, "Should only count regular file (+3), not plans file");
+    assert_eq!(removed, 0, "Should remove 0 lines");
+}
