@@ -355,6 +355,12 @@ fn get_token_info(input: &Input, colors: &Colors) -> String {
 }
 
 fn main() {
+    // Handle --version flag
+    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let input: Input = match serde_json::from_reader(io::stdin()) {
         Ok(i) => i,
         Err(_) => std::process::exit(1),

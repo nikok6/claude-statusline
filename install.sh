@@ -27,14 +27,21 @@ curl -fsSL "https://github.com/nikok6/claude-statusline/releases/latest/download
 chmod +x ~/.claude/statusline
 STATUSLINE_CMD="~/.claude/statusline"
 
-# Update settings.json with statusLine config
+# Download update script
+curl -fsSL "https://raw.githubusercontent.com/nikok6/claude-statusline/main/update.sh" -o ~/.claude/statusline-update.sh
+chmod +x ~/.claude/statusline-update.sh
+UPDATE_CMD="~/.claude/statusline-update.sh"
+
+# Update settings.json with statusLine and hooks config
 if [ -f ~/.claude/settings.json ] && [ -s ~/.claude/settings.json ]; then
-  # Merge statusLine into existing settings (file exists and is non-empty)
+  # Merge into existing settings (file exists and is non-empty)
   if command -v jq &> /dev/null; then
-    jq --arg cmd "$STATUSLINE_CMD" '.statusLine = {"type": "command", "command": $cmd}' \
-      ~/.claude/settings.json > /tmp/claude-settings.json && mv /tmp/claude-settings.json ~/.claude/settings.json
+    jq --arg cmd "$STATUSLINE_CMD" --arg update "$UPDATE_CMD" '
+      .statusLine = {"type": "command", "command": $cmd} |
+      .hooks.SessionStart = ((.hooks.SessionStart // []) + [{"hooks": [{"type": "command", "command": $update}]}] | unique_by(.hooks[0].command))
+    ' ~/.claude/settings.json > /tmp/claude-settings.json && mv /tmp/claude-settings.json ~/.claude/settings.json
   else
-    echo "Warning: jq not found, cannot merge settings. Please add statusLine config manually."
+    echo "Warning: jq not found, cannot merge settings. Please add config manually."
   fi
 else
   # Create new settings.json
@@ -43,6 +50,14 @@ else
   "statusLine": {
     "type": "command",
     "command": "$STATUSLINE_CMD"
+  },
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "$UPDATE_CMD"
+      }]
+    }]
   }
 }
 EOF
