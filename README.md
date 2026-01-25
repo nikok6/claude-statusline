@@ -3,7 +3,7 @@
 A custom statusline for [Claude Code](https://claude.ai/code) showing git branch, session diff, model, and token usage.
 
 ```
-main | +249 -9 | Opus 4.5 | ▰▱▱▱▱  79k/200k tokens
+main | +249 -9 | Opus 4.5 | ████░░░░ 79k/200k tokens
 ```
 
 ## Installation
@@ -50,5 +50,9 @@ cargo test
 - Session net diff (lines added/removed since session start)
 - Model name
 - Token usage with progress bar
+- Theme-aware colors (auto-detects light/dark mode from Claude settings)
+- Plan mode file exclusion (changes in `~/.claude/plans` are ignored)
+- Automatic updates (checks for new releases on session start)
+- Performance caching (avoids re-parsing entire transcript)
 
-Uses Catppuccin color theme.
+Uses Catppuccin color theme (Latte for light mode, Mocha for dark mode).
