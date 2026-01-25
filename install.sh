@@ -25,6 +25,12 @@ fi
 VERSION=$(curl -fsSL "https://api.github.com/repos/nikok6/claude-statusline/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
 curl -fsSL "https://github.com/nikok6/claude-statusline/releases/latest/download/$BINARY" -o ~/.claude/statusline
 chmod +x ~/.claude/statusline
+
+# Sign binary to avoid Gatekeeper issues on macOS
+if [ "$OS" = "Darwin" ]; then
+  codesign --sign - --force ~/.claude/statusline 2>/dev/null || true
+fi
+
 STATUSLINE_CMD="~/.claude/statusline"
 
 # Download update script
