@@ -1,3 +1,4 @@
+use catppuccin::{Color, Flavor, PALETTE};
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
@@ -6,28 +7,20 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::process::Command;
 
-// ANSI colors - Light mode (Catppuccin Latte 256-color)
-const COLOR_BRANCH_LIGHT: &str = "\x1b[38;5;32m";
-const COLOR_ADDED_LIGHT: &str = "\x1b[38;5;71m";
-const COLOR_REMOVED_LIGHT: &str = "\x1b[38;5;131m";
-const COLOR_MODEL_LIGHT: &str = "\x1b[38;5;97m";
-const COLOR_TOKENS_LIGHT: &str = "\x1b[38;5;173m";
-
-// ANSI colors - Dark mode (Catppuccin Mocha 256-color)
-const COLOR_BRANCH_DARK: &str = "\x1b[38;5;117m";
-const COLOR_ADDED_DARK: &str = "\x1b[38;5;114m";
-const COLOR_REMOVED_DARK: &str = "\x1b[38;5;210m";
-const COLOR_MODEL_DARK: &str = "\x1b[38;5;183m";
-const COLOR_TOKENS_DARK: &str = "\x1b[38;5;215m";
-
 const COLOR_RESET: &str = "\x1b[0m";
 
+fn ansi(color: Color) -> String {
+    format!("\x1b[38;2;{};{};{}m", color.rgb.r, color.rgb.g, color.rgb.b)
+}
+
 struct Colors {
-    branch: &'static str,
-    added: &'static str,
-    removed: &'static str,
-    model: &'static str,
-    tokens: &'static str,
+    dir: String,
+    branch: String,
+    added: String,
+    removed: String,
+    model: String,
+    tokens: String,
+    sep: String,
 }
 
 fn detect_theme() -> Colors {
@@ -39,22 +32,16 @@ fn detect_theme() -> Colors {
         .map(|theme| theme.contains("light"))
         .unwrap_or(false);
 
-    if is_light {
-        Colors {
-            branch: COLOR_BRANCH_LIGHT,
-            added: COLOR_ADDED_LIGHT,
-            removed: COLOR_REMOVED_LIGHT,
-            model: COLOR_MODEL_LIGHT,
-            tokens: COLOR_TOKENS_LIGHT,
-        }
-    } else {
-        Colors {
-            branch: COLOR_BRANCH_DARK,
-            added: COLOR_ADDED_DARK,
-            removed: COLOR_REMOVED_DARK,
-            model: COLOR_MODEL_DARK,
-            tokens: COLOR_TOKENS_DARK,
-        }
+    let flavor: &Flavor = if is_light { &PALETTE.latte } else { &PALETTE.frappe };
+
+    Colors {
+        dir: ansi(flavor.colors.teal),
+        branch: ansi(flavor.colors.blue),
+        added: ansi(flavor.colors.green),
+        removed: ansi(flavor.colors.red),
+        model: ansi(flavor.colors.mauve),
+        tokens: ansi(flavor.colors.peach),
+        sep: ansi(flavor.colors.text),
     }
 }
 
@@ -163,6 +150,14 @@ fn save_cache(cache_path: &str, cache: &DiffCache) {
     if let Ok(content) = serde_json::to_string(cache) {
         let _ = fs::write(cache_path, content);
     }
+}
+
+fn get_dir_name(cwd: &str) -> String {
+    std::path::Path::new(cwd)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn get_git_branch(cwd: &str) -> String {
@@ -367,17 +362,23 @@ fn main() {
     };
 
     let colors = detect_theme();
+    let dir_name = get_dir_name(&input.cwd);
     let git_branch = get_git_branch(&input.cwd);
     let model_name = &input.model.display_name;
     let (added, removed) = calculate_net_diff(&input.transcript_path);
     let token_info = get_token_info(&input, &colors);
 
     println!(
-        "{}{}{} | {}+{}{} {}-{}{} | {}{}{} | {}",
+        "{}{}{} {}|{} {}{}{} {}|{} {}+{}{} {}-{}{} {}|{} {}{}{} {}|{} {}",
+        colors.dir, dir_name, COLOR_RESET,
+        colors.sep, COLOR_RESET,
         colors.branch, git_branch, COLOR_RESET,
+        colors.sep, COLOR_RESET,
         colors.added, added, COLOR_RESET,
         colors.removed, removed, COLOR_RESET,
+        colors.sep, COLOR_RESET,
         colors.model, model_name, COLOR_RESET,
+        colors.sep, COLOR_RESET,
         token_info
     );
 }
