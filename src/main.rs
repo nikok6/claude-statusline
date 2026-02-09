@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
-use std::process::Command;
+
 
 const COLOR_RESET: &str = "\x1b[0m";
 
@@ -161,14 +161,24 @@ fn get_dir_name(cwd: &str) -> String {
 }
 
 fn get_git_branch(cwd: &str) -> String {
-    Command::new("git")
-        .args(["-C", cwd, "branch", "--show-current"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "no-git".to_string())
+    read_git_branch(cwd).unwrap_or_else(|| "no-git".to_string())
+}
+
+fn read_git_branch(cwd: &str) -> Option<String> {
+    let git_path = std::path::Path::new(cwd).join(".git");
+
+    // .git can be a file (worktrees/submodules) with "gitdir: <path>"
+    let head_path = if git_path.is_file() {
+        let content = fs::read_to_string(&git_path).ok()?;
+        let gitdir = content.strip_prefix("gitdir: ")?.trim().to_string();
+        std::path::PathBuf::from(gitdir).join("HEAD")
+    } else {
+        git_path.join("HEAD")
+    };
+
+    let head = fs::read_to_string(head_path).ok()?;
+    let branch = head.strip_prefix("ref: refs/heads/")?.trim().to_string();
+    if branch.is_empty() { None } else { Some(branch) }
 }
 
 fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>) {
@@ -187,6 +197,9 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
     let mut edit_chains: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
     for line in reader.lines().flatten() {
+        if !line.contains("\"toolUseResult\"") {
+            continue;
+        }
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if let Some(result) = entry.tool_use_result {
                 if let Some(ref file_path) = result.file_path {

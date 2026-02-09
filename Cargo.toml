@@ -1,6 +1,6 @@
 [package]
 name = "statusline"
-version = "1.0.11"
+version = "1.0.12"
 edition = "2024"
 
 [dependencies]
@@ -8,9 +8,6 @@ catppuccin = "2.6.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 similar = "2"
-
-[dev-dependencies]
-serde_json = "1"
 
 [profile.release]
 opt-level = "z"
