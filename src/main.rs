@@ -4,8 +4,8 @@ use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
+use std::borrow::Cow;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
-
 
 const COLOR_RESET: &str = "\x1b[0m";
 
@@ -110,18 +110,15 @@ fn has_new_file_ops(transcript_path: &str, byte_offset: u64) -> bool {
         Err(_) => return true,
     };
 
-    // Seek to last known position
     if file.seek(SeekFrom::Start(byte_offset)).is_err() {
         return true;
     }
 
-    // Read new content and check for filePath
     let mut new_content = String::new();
     if file.read_to_string(&mut new_content).is_err() {
         return true;
     }
 
-    // Fast string check - if "filePath" appears in new content, we have new file ops
     new_content.contains("\"filePath\"")
 }
 
@@ -168,17 +165,26 @@ fn read_git_branch(cwd: &str) -> Option<String> {
     let git_path = std::path::Path::new(cwd).join(".git");
 
     // .git can be a file (worktrees/submodules) with "gitdir: <path>"
-    let head_path = if git_path.is_file() {
+    let git_dir = if git_path.is_file() {
         let content = fs::read_to_string(&git_path).ok()?;
-        let gitdir = content.strip_prefix("gitdir: ")?.trim().to_string();
-        std::path::PathBuf::from(gitdir).join("HEAD")
+        let gitdir = content.strip_prefix("gitdir: ")?.trim();
+        std::path::Path::new(cwd).join(gitdir)
     } else {
-        git_path.join("HEAD")
+        git_path
     };
 
-    let head = fs::read_to_string(head_path).ok()?;
-    let branch = head.strip_prefix("ref: refs/heads/")?.trim().to_string();
-    if branch.is_empty() { None } else { Some(branch) }
+    if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+        return Some("rebasing".to_string());
+    }
+
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(branch) => {
+            let branch = branch.trim().to_string();
+            if branch.is_empty() { None } else { Some(branch) }
+        }
+        None => Some("detached".to_string()),
+    }
 }
 
 fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>) {
@@ -303,20 +309,19 @@ fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
     (added, removed)
 }
 
-fn compute_diff(old: &str, new: &str) -> (usize, usize) {
-    // Normalize trailing newlines to avoid spurious diffs
-    let old_normalized = if old.is_empty() || old.ends_with('\n') {
-        old.to_string()
+fn ensure_trailing_newline(s: &str) -> Cow<'_, str> {
+    if s.is_empty() || s.ends_with('\n') {
+        Cow::Borrowed(s)
     } else {
-        format!("{}\n", old)
-    };
-    let new_normalized = if new.is_empty() || new.ends_with('\n') {
-        new.to_string()
-    } else {
-        format!("{}\n", new)
-    };
+        Cow::Owned(format!("{}\n", s))
+    }
+}
 
-    let diff = TextDiff::from_lines(&old_normalized, &new_normalized);
+fn compute_diff(old: &str, new: &str) -> (usize, usize) {
+    let old_normalized = ensure_trailing_newline(old);
+    let new_normalized = ensure_trailing_newline(new);
+
+    let diff = TextDiff::from_lines(&*old_normalized, &*new_normalized);
     let mut added = 0;
     let mut removed = 0;
 
