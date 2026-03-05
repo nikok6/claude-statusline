@@ -600,3 +600,78 @@ fn test_plans_directory_excluded() {
     assert_eq!(added, 3, "Should only count regular file (+3), not plans file");
     assert_eq!(removed, 0, "Should remove 0 lines");
 }
+
+#[test]
+fn test_projects_directory_excluded() {
+    let home = std::env::var("HOME").expect("HOME not set");
+    let projects_dir = format!("{}/.claude/projects/test-project", home);
+    let memory_dir = format!("{}/memory", projects_dir);
+    let _ = fs::create_dir_all(&memory_dir);
+
+    let regular_file = std::env::temp_dir().join(format!("test_regular_{}.txt", unique_id()));
+    let memory_file = format!("{}/MEMORY_{}.md", memory_dir, unique_id());
+
+    let regular_content = "line1\nline2\n";
+    let memory_content = "# Memory\nsome notes\n";
+    fs::write(&regular_file, regular_content).unwrap();
+    fs::write(&memory_file, memory_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        &write_entry(regular_file.to_str().unwrap(), "", regular_content),
+        &write_entry(&memory_file, "", memory_content),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, regular_file.to_str().unwrap());
+
+    let _ = fs::remove_file(&memory_file);
+
+    assert_eq!(added, 2, "Should only count regular file (+2), not memory file");
+    assert_eq!(removed, 0, "Should remove 0 lines");
+}
+
+#[test]
+fn test_edit_then_replace_superset() {
+    // Bug: editing a snippet inside a block, then replacing the entire block
+    // creates an orphaned chain whose diff gets double-counted.
+    //
+    // Edit 1: "old2\n" -> "new2\n" (chain A)
+    // Edit 2: "old1\nnew2\nold3\n" -> "replaced1\nreplaced2\n" (chain B, superset of chain A)
+    //
+    // Chain A is now orphaned (its current is inside chain B's old_string).
+    // Correct result: diff "old1\nold2\nold3\n" vs "replaced1\nreplaced2\n" = +2 -3
+    let test_file = std::env::temp_dir().join(format!("test_superset_{}.txt", unique_id()));
+    let final_content = "replaced1\nreplaced2\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        &edit_entry(test_file.to_str().unwrap(), "old2\n", "new2\n"),
+        &edit_entry(test_file.to_str().unwrap(), "old1\nnew2\nold3\n", "replaced1\nreplaced2\n"),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    // True change: 3 original lines -> 2 new lines = +2 -3
+    assert_eq!(added, 2, "Should add 2 lines (not double-count orphaned chain)");
+    assert_eq!(removed, 3, "Should remove 3 lines (not double-count orphaned chain)");
+}
+
+#[test]
+fn test_write_after_edit_clears_chains() {
+    // Bug: editing a pre-existing file, then a Write replaces the entire file.
+    // The edit chain should be discarded since the Write supersedes it.
+    let test_file = std::env::temp_dir().join(format!("test_write_after_edit_{}.txt", unique_id()));
+    let final_content = "completely\nnew\nfile\n";
+    fs::write(&test_file, final_content).unwrap();
+
+    let transcript = create_test_transcript(&[
+        // Edit an existing file (no prior Write — creates edit chain)
+        &edit_entry(test_file.to_str().unwrap(), "old1\nold2\n", "changed1\nchanged2\nchanged3\n"),
+        // Write replaces the entire file — should supersede the edit
+        &write_entry(test_file.to_str().unwrap(), "some\noriginal\n", final_content),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, test_file.to_str().unwrap());
+    // Only the Write should count: "some\noriginal\n" (2 lines) -> "completely\nnew\nfile\n" (3 lines) = +3 -2
+    // The edit chain (+3 -2) should NOT also be counted
+    assert_eq!(added, 3, "Should only count Write diff, not edit chain");
+    assert_eq!(removed, 2, "Should only count Write diff, not edit chain");
+}

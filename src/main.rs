@@ -193,8 +193,8 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
         Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
     };
 
-    let plans_dir = std::env::var("HOME")
-        .map(|h| format!("{}/.claude/plans", h))
+    let exclude_dirs: Vec<String> = std::env::var("HOME")
+        .map(|h| vec![format!("{}/.claude/plans/", h), format!("{}/.claude/projects/", h)])
         .unwrap_or_default();
 
     let reader = BufReader::new(file);
@@ -209,8 +209,7 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if let Some(result) = entry.tool_use_result {
                 if let Some(ref file_path) = result.file_path {
-                    // Skip files in ~/.claude/plans
-                    if !plans_dir.is_empty() && file_path.starts_with(&plans_dir) {
+                    if exclude_dirs.iter().any(|d| file_path.starts_with(d)) {
                         continue;
                     }
                     if let Some(ref content) = result.content {
@@ -218,6 +217,7 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
                             .entry(file_path.clone())
                             .or_insert_with(|| result.original_file.clone().unwrap_or_default());
                         file_finals.insert(file_path.clone(), content.clone());
+                        edit_chains.remove(file_path);
                     } else if let (Some(old_str), Some(new_str)) = (&result.old_string, &result.new_string) {
                         let applied_to_write = if let Some(final_content) = file_finals.get_mut(file_path) {
                             if final_content.contains(old_str.as_str()) {
@@ -243,7 +243,17 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
                             }
 
                             if !found {
-                                chains.push((old_str.clone(), new_str.clone()));
+                                // Absorb any existing chains whose current is inside this edit's old_string
+                                let mut resolved_old = old_str.clone();
+                                chains.retain(|(orig, cur)| {
+                                    if resolved_old.contains(cur.as_str()) {
+                                        resolved_old = resolved_old.replacen(cur, orig, 1);
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                                chains.push((resolved_old, new_str.clone()));
                             }
                         }
                     }
