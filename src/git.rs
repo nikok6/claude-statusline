@@ -5,13 +5,21 @@ pub fn get_git_branch(cwd: &str) -> String {
 }
 
 fn read_git_branch(cwd: &str) -> Option<String> {
-    let git_path = std::path::Path::new(cwd).join(".git");
+    // Walk up to find .git directory or file
+    let mut dir = std::path::Path::new(cwd);
+    let git_path = loop {
+        let candidate = dir.join(".git");
+        if candidate.exists() {
+            break candidate;
+        }
+        dir = dir.parent()?;
+    };
 
     // .git can be a file (worktrees/submodules) with "gitdir: <path>"
     let git_dir = match fs::read_to_string(&git_path) {
         Ok(content) if content.starts_with("gitdir: ") => {
             let gitdir = content.strip_prefix("gitdir: ").unwrap().trim();
-            std::path::Path::new(cwd).join(gitdir)
+            git_path.parent().unwrap().join(gitdir)
         }
         _ => git_path,
     };

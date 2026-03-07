@@ -126,6 +126,16 @@ fn test_worktree() {
 }
 
 #[test]
+fn test_branch_from_subdirectory() {
+    let dir = setup_git_dir("subdir");
+    fs::write(dir.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
+    let sub = dir.join("a").join("b").join("c");
+    fs::create_dir_all(&sub).unwrap();
+    assert_eq!(run_statusline_branch(sub.to_str().unwrap()), "feature");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_worktree_rebasing() {
     let dir = setup_git_dir("worktree_rebase");
     let worktree_gitdir = dir.join(".git/worktrees/my-worktree");
