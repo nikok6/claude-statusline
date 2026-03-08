@@ -17,21 +17,41 @@ fn setup_git_dir(name: &str) -> std::path::PathBuf {
 }
 
 fn strip_ansi(s: &str) -> String {
-    s.chars()
-        .fold((String::new(), false), |(mut s, in_escape), c| {
-            if c == '\x1b' {
-                (s, true)
-            } else if in_escape {
-                (s, c != 'm')
-            } else {
-                s.push(c);
-                (s, false)
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.peek() {
+                Some('[') => {
+                    // CSI sequence: \x1b[...m
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if next == 'm' { break; }
+                    }
+                }
+                Some(']') => {
+                    // OSC sequence: \x1b]...ST (where ST is \x1b\\)
+                    loop {
+                        match chars.next() {
+                            Some('\x1b') if chars.peek() == Some(&'\\') => {
+                                chars.next();
+                                break;
+                            }
+                            None => break,
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
-        })
-        .0
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
-fn run_statusline_branch(cwd: &str) -> String {
+fn run_statusline_raw(cwd: &str) -> String {
     let transcript = std::env::temp_dir().join(format!("sl_git_transcript_{}.jsonl", unique_id()));
     fs::write(&transcript, "").unwrap();
 
@@ -53,11 +73,23 @@ fn run_statusline_branch(cwd: &str) -> String {
 
     let _ = fs::remove_file(&transcript);
 
-    let stripped = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
 
-    // Output format: "dir | branch | +0 -0 | model | tokens"
+fn run_statusline_branch(cwd: &str) -> String {
+    let raw = run_statusline_raw(cwd);
+    let stripped = strip_ansi(&raw);
     let parts: Vec<&str> = stripped.trim().split(" | ").collect();
     parts.get(1).unwrap_or(&"").to_string()
+}
+
+fn extract_osc8_url(raw: &str) -> Option<String> {
+    // Find first OSC 8 link: \x1b]8;;URL\x1b\\
+    let marker = "\x1b]8;;";
+    let start = raw.find(marker)? + marker.len();
+    let end = raw[start..].find("\x1b\\")?;
+    let url = &raw[start..start + end];
+    if url.is_empty() { None } else { Some(url.to_string()) }
 }
 
 #[test]
@@ -148,5 +180,63 @@ fn test_worktree_rebasing() {
     fs::write(worktree_dir.join(".git"), "gitdir: ../.git/worktrees/my-worktree").unwrap();
 
     assert_eq!(run_statusline_branch(worktree_dir.to_str().unwrap()), "rebasing");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_remote_url_ssh() {
+    let dir = setup_git_dir("remote_ssh");
+    fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::write(
+        dir.join(".git/config"),
+        "[remote \"origin\"]\n\turl = git@github.com:user/repo.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+    ).unwrap();
+    let raw = run_statusline_raw(dir.to_str().unwrap());
+    assert_eq!(extract_osc8_url(&raw), Some("https://github.com/user/repo".to_string()));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_remote_url_https() {
+    let dir = setup_git_dir("remote_https");
+    fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::write(
+        dir.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://github.com/user/repo.git\n",
+    ).unwrap();
+    let raw = run_statusline_raw(dir.to_str().unwrap());
+    assert_eq!(extract_osc8_url(&raw), Some("https://github.com/user/repo".to_string()));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_remote_url_https_no_dotgit() {
+    let dir = setup_git_dir("remote_nodotgit");
+    fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::write(
+        dir.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://github.com/user/repo\n",
+    ).unwrap();
+    let raw = run_statusline_raw(dir.to_str().unwrap());
+    assert_eq!(extract_osc8_url(&raw), Some("https://github.com/user/repo".to_string()));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_no_remote_no_link() {
+    let dir = setup_git_dir("no_remote");
+    fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::write(dir.join(".git/config"), "[core]\n\tbare = false\n").unwrap();
+    let raw = run_statusline_raw(dir.to_str().unwrap());
+    assert_eq!(extract_osc8_url(&raw), None);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_no_git_no_link() {
+    let dir = setup_git_dir("nogit_link");
+    fs::remove_dir_all(dir.join(".git")).unwrap();
+    let raw = run_statusline_raw(dir.to_str().unwrap());
+    assert_eq!(extract_osc8_url(&raw), None);
     let _ = fs::remove_dir_all(&dir);
 }
