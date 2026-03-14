@@ -3,7 +3,6 @@ use similar::{ChangeTag, TextDiff};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
 #[derive(Deserialize)]
@@ -34,9 +33,11 @@ struct DiffCache {
 }
 
 fn get_cache_path(transcript_path: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    transcript_path.hash(&mut hasher);
-    format!("/tmp/statusline_cache_{:x}.json", hasher.finish())
+    let name = std::path::Path::new(transcript_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    format!("/tmp/statusline_cache_{}.json", name)
 }
 
 fn has_new_file_ops(transcript_path: &str, byte_offset: u64) -> bool {
