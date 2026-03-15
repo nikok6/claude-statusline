@@ -36,7 +36,7 @@ fn main() {
     let colors = detect_theme();
     let dir_name = get_dir_name(&input.cwd);
     let (git_branch, remote_url) = git::get_git_info(&input.cwd);
-    let model_name = &input.model.display_name;
+    let model_name = input.model.display_name.split('(').next().unwrap_or(&input.model.display_name).trim();
     let (added, removed) = diff::calculate_net_diff(&input.transcript_path);
     let token_info = tokens::get_token_info(&input, &colors);
 
