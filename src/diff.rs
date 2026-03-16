@@ -1,9 +1,10 @@
-use serde::{Deserialize, Serialize};
+use crate::cache;
+use serde::Deserialize;
 use similar::{ChangeTag, TextDiff};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 #[derive(Deserialize)]
 struct TranscriptEntry {
@@ -22,67 +23,6 @@ struct ToolUseResult {
     old_string: Option<String>,
     #[serde(rename = "newString")]
     new_string: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct DiffCache {
-    byte_offset: u64,
-    added: usize,
-    removed: usize,
-    files: Vec<String>,
-}
-
-fn get_cache_path(transcript_path: &str) -> String {
-    let name = std::path::Path::new(transcript_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
-    format!("/tmp/statusline_cache_{}.json", name)
-}
-
-fn has_new_file_ops(transcript_path: &str, byte_offset: u64) -> bool {
-    let mut file = match File::open(transcript_path) {
-        Ok(f) => f,
-        Err(_) => return true,
-    };
-
-    if file.seek(SeekFrom::Start(byte_offset)).is_err() {
-        return true;
-    }
-
-    let mut new_content = String::new();
-    if file.read_to_string(&mut new_content).is_err() {
-        return true;
-    }
-
-    new_content.contains("\"filePath\"")
-}
-
-fn get_file_size(path: &str) -> u64 {
-    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-}
-
-fn load_cache(cache_path: &str, transcript_path: &str) -> Option<DiffCache> {
-    let content = fs::read_to_string(cache_path).ok()?;
-    let cache: DiffCache = serde_json::from_str(&content).ok()?;
-
-    // Check if any tracked file was deleted
-    if !cache.files.iter().all(|f| std::path::Path::new(f).exists()) {
-        return None;
-    }
-
-    // Check if there are new file operations since last cache
-    if has_new_file_ops(transcript_path, cache.byte_offset) {
-        return None;
-    }
-
-    Some(cache)
-}
-
-fn save_cache(cache_path: &str, cache: &DiffCache) {
-    if let Ok(content) = serde_json::to_string(cache) {
-        let _ = fs::write(cache_path, content);
-    }
 }
 
 fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>) {
@@ -164,11 +104,11 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
 }
 
 pub fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
-    let cache_path = get_cache_path(transcript_path);
+    let cache_path = cache::get_cache_path(transcript_path);
 
     // Try cache first
-    if let Some(cache) = load_cache(&cache_path, transcript_path) {
-        return (cache.added, cache.removed);
+    if let Some(c) = cache::load(&cache_path, transcript_path) {
+        return (c.added, c.removed);
     }
 
     // Cache miss: parse and compute
@@ -206,12 +146,14 @@ pub fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
         removed += r;
     }
 
-    // Save cache with current file size as byte offset
-    save_cache(&cache_path, &DiffCache {
-        byte_offset: get_file_size(transcript_path),
+    // Save cache, preserving existing claude_pid
+    let existing_pid = cache::load_raw(&cache_path).and_then(|c| c.claude_pid);
+    cache::save(&cache_path, &cache::Cache {
+        byte_offset: cache::get_file_size(transcript_path),
         added,
         removed,
         files,
+        claude_pid: existing_pid,
     });
 
     (added, removed)

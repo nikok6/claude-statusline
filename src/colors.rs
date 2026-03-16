@@ -14,6 +14,8 @@ pub struct Colors {
     pub removed: String,
     pub model: String,
     pub tokens: String,
+    pub cpu: String,
+    pub ram: String,
     pub sep: String,
 }
 
@@ -35,6 +37,8 @@ pub fn detect_theme() -> Colors {
         removed: ansi(flavor.colors.red),
         model: ansi(flavor.colors.mauve),
         tokens: ansi(flavor.colors.peach),
+        cpu: ansi(flavor.colors.subtext0),
+        ram: ansi(flavor.colors.subtext0),
         sep: ansi(flavor.colors.text),
     }
 }

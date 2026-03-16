@@ -1,6 +1,8 @@
+mod cache;
 mod colors;
 mod diff;
 mod git;
+mod process;
 mod tokens;
 
 use colors::{COLOR_RESET, detect_theme};
@@ -39,6 +41,7 @@ fn main() {
     let model_name = input.model.display_name.split('(').next().unwrap_or(&input.model.display_name).trim();
     let (added, removed) = diff::calculate_net_diff(&input.transcript_path);
     let token_info = tokens::get_token_info(&input, &colors);
+    let stats = process::get_claude_stats(&input.transcript_path);
 
     println!(
         "{}{}{} {}|{} {}{}{} {}|{} {}+{}{} {}-{}{} {}|{} {}{}{} {}|{} {}",
@@ -51,6 +54,14 @@ fn main() {
         colors.sep, COLOR_RESET,
         colors.model, model_name, COLOR_RESET,
         colors.sep, COLOR_RESET,
-        token_info
+        token_info,
     );
+    if let Some(stats) = stats {
+        println!(
+            "{}CPU {}{} {}—{} {}RAM {}{}",
+            colors.cpu, stats.cpu, COLOR_RESET,
+            colors.sep, COLOR_RESET,
+            colors.ram, stats.ram, COLOR_RESET,
+        );
+    }
 }
