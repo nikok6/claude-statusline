@@ -1,9 +1,10 @@
 # claude-statusline
 
-A custom statusline for [Claude Code](https://claude.ai/code) showing git branch, session diff, model, and token usage.
+A custom statusline for [Claude Code](https://claude.ai/code) showing git info, session diff, model, token usage, and process stats.
 
 ```
-my-project | main | +249 -9 | Opus 4.5 | ████░░░░ 79k/200k
+my-project | main | +249 -9 | Opus 4.6 | ████░░░░ 79k/200k
+CPU 12.3% | RAM 500MB
 ```
 
 ## Installation
@@ -46,14 +47,67 @@ cargo test
 
 ## Features
 
-- Directory name
-- Git branch name
-- Session net diff (lines added/removed since session start)
-- Model name
-- Token usage with progress bar
-- Theme-aware colors (auto-detects light/dark mode from Claude settings)
-- Plan mode file exclusion (changes in `~/.claude/plans` are ignored)
-- Automatic updates (checks for new releases on session start)
-- Performance caching (avoids re-parsing entire transcript)
+- **Directory name** — hyperlinked to remote URL if available
+- **Git branch** — detached HEAD and rebasing states
+- **Session diff** — net lines added/removed (excludes plan mode files)
+- **Model name**
+- **Token usage** — progress bar with current/total
+- **CPU usage** — Claude process CPU percentage
+- **RAM usage** — Claude process memory in MB
+- **Theme-aware colors** — auto-detects light/dark mode
+- **Performance caching** — avoids re-parsing transcript and process tree
 
 Uses [Catppuccin](https://catppuccin.com/) color theme (Latte for light mode, Frappé for dark mode).
+
+## Auto-update
+
+If installed via `install.sh`, a Claude Code session start hook is added that checks for new releases on each session start and updates the binary automatically.
+
+## Configuration
+
+Optionally create `~/.claude/statusline.json` to customize fields, layout, and colors:
+
+```bash
+statusline --init    # generate default config
+statusline --fields  # list available fields and colors
+```
+
+### Example config
+
+```json
+{
+  "lines": [
+    { "fields": ["dir", "branch", "diff", "model", "tokens"], "separator": "|" },
+    { "fields": ["cpu", "ram"], "separator": "|" }
+  ],
+  "colors": {
+    "dir": "teal",
+    "branch": "blue",
+    "added": "green",
+    "removed": "red",
+    "model": "mauve",
+    "tokens": "peach",
+    "cpu": "subtext0",
+    "ram": "subtext0",
+    "separator": "text"
+  }
+}
+```
+
+All fields are optional — missing fields use defaults. Colors can be [Catppuccin](https://catppuccin.com/) names or hex values (`#ff6b6b`).
+
+### Available fields
+
+| Field | Description |
+|-------|-------------|
+| `dir` | Project directory name (hyperlinked if remote URL exists) |
+| `branch` | Git branch name |
+| `diff` | Lines added/removed (`+N -N`) |
+| `model` | Claude model name |
+| `tokens` | Token usage progress bar |
+| `cpu` | Claude CPU usage |
+| `ram` | Claude RAM usage |
+
+### Available colors
+
+Any [Catppuccin](https://catppuccin.com/palette) color name or hex value (`#rrggbb`). Run `statusline --fields` to see the full list.
