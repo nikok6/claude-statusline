@@ -105,8 +105,10 @@ All fields are optional — missing fields use defaults. Colors can be [Catppucc
 | `diff` | Lines added/removed (`+N -N`) |
 | `model` | Claude model name |
 | `tokens` | Token usage progress bar |
+| `tokens-percent` | Token usage bar with percentage |
 | `cpu` | Claude CPU usage |
 | `ram` | Claude RAM usage |
+| `cost` | Session cost in USD |
 
 ### Available colors
 

@@ -6,6 +6,7 @@ pub struct Input {
     pub transcript_path: String,
     pub model: Model,
     context_window: Option<ContextWindow>,
+    cost: Option<Cost>,
 }
 
 #[derive(Deserialize)]
@@ -17,6 +18,12 @@ pub struct Model {
 struct ContextWindow {
     current_usage: Option<CurrentUsage>,
     context_window_size: Option<u64>,
+    used_percentage: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct Cost {
+    total_cost_usd: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -45,4 +52,16 @@ pub fn get_token_info(input: &Input) -> Option<String> {
 
     let filled = ((current * 8) / size) as usize;
     Some(format!("{} {}k/{}k", make_bar(filled), current / 1000, size / 1000))
+}
+
+pub fn get_token_percent_info(input: &Input) -> Option<String> {
+    let ctx = input.context_window.as_ref()?;
+    let p = ctx.used_percentage?;
+    let size_k = ctx.context_window_size.unwrap_or(0) / 1000;
+    let filled = (p as usize * 8) / 100;
+    Some(format!("{} {}% · {}k", make_bar(filled), p, size_k))
+}
+
+pub fn get_cost(input: &Input) -> Option<f64> {
+    input.cost.as_ref()?.total_cost_usd
 }

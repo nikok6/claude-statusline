@@ -89,8 +89,10 @@ pub fn print_fields() {
     println!("  diff             lines added/removed (uses 'added' and 'removed' colors)");
     println!("  model            Claude model name");
     println!("  tokens           token usage bar (50k/200k)");
+    println!("  tokens-percent   token usage bar (15% · 200k)");
     println!("  cpu              Claude CPU usage");
     println!("  ram              Claude RAM usage");
+    println!("  cost             session cost in USD");
     println!();
     println!("Colors (catppuccin):");
     println!("  rosewater, flamingo, pink, mauve, red, maroon, peach, yellow,");

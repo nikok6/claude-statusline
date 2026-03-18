@@ -24,26 +24,32 @@ fn link_wrap(text: &str, url: &Option<String>) -> String {
     }
 }
 
-fn render_field(
-    field: &str,
-    colors: &colors::Colors,
-    dir_name: &str,
-    remote_url: &Option<String>,
-    git_branch: &str,
-    model_name: &str,
+struct RenderContext<'a> {
+    colors: &'a colors::Colors,
+    dir_name: &'a str,
+    remote_url: &'a Option<String>,
+    git_branch: &'a str,
+    model_name: &'a str,
     added: usize,
     removed: usize,
-    token_info: &Option<String>,
-    stats: &Option<process::ClaudeStats>,
-) -> Option<String> {
+    token_info: &'a Option<String>,
+    token_percent_info: &'a Option<String>,
+    stats: &'a Option<process::ClaudeStats>,
+    cost: Option<f64>,
+}
+
+fn render_field(field: &str, ctx: &RenderContext) -> Option<String> {
+    let c = ctx.colors;
     match field {
-        "dir" => Some(format!("{}{}{}", colors.dir, link_wrap(dir_name, remote_url), COLOR_RESET)),
-        "branch" => Some(format!("{}{}{}", colors.branch, git_branch, COLOR_RESET)),
-        "diff" => Some(format!("{}+{}{} {}-{}{}", colors.added, added, COLOR_RESET, colors.removed, removed, COLOR_RESET)),
-        "model" => Some(format!("{}{}{}", colors.model, model_name, COLOR_RESET)),
-        "tokens" => token_info.as_ref().map(|t| format!("{}{}{}", colors.tokens, t, COLOR_RESET)),
-        "cpu" => stats.as_ref().map(|s| format!("{}CPU {}{}", colors.cpu, s.cpu, COLOR_RESET)),
-        "ram" => stats.as_ref().map(|s| format!("{}RAM {}{}", colors.ram, s.ram, COLOR_RESET)),
+        "dir" => Some(format!("{}{}{}", c.dir, link_wrap(ctx.dir_name, ctx.remote_url), COLOR_RESET)),
+        "branch" => Some(format!("{}{}{}", c.branch, ctx.git_branch, COLOR_RESET)),
+        "diff" => Some(format!("{}+{}{} {}-{}{}", c.added, ctx.added, COLOR_RESET, c.removed, ctx.removed, COLOR_RESET)),
+        "model" => Some(format!("{}{}{}", c.model, ctx.model_name, COLOR_RESET)),
+        "tokens" => ctx.token_info.as_ref().map(|t| format!("{}{}{}", c.tokens, t, COLOR_RESET)),
+        "tokens-percent" => ctx.token_percent_info.as_ref().map(|t| format!("{}{}{}", c.tokens_percent, t, COLOR_RESET)),
+        "cpu" => ctx.stats.as_ref().map(|s| format!("{}CPU {}{}", c.cpu, s.cpu, COLOR_RESET)),
+        "ram" => ctx.stats.as_ref().map(|s| format!("{}RAM {}{}", c.ram, s.ram, COLOR_RESET)),
+        "cost" => ctx.cost.map(|v| format!("{}${:.2}{}", c.cost, v, COLOR_RESET)),
         _ => None,
     }
 }
@@ -78,12 +84,27 @@ fn main() {
     let model_name = input.model.display_name.split('(').next().unwrap_or(&input.model.display_name).trim().to_string();
     let (added, removed) = diff::calculate_net_diff(&input.transcript_path);
     let token_info = tokens::get_token_info(&input);
+    let token_percent_info = tokens::get_token_percent_info(&input);
     let stats = process::get_claude_stats(&input.transcript_path);
+    let cost = tokens::get_cost(&input);
+
+    let ctx = RenderContext {
+        colors: &colors,
+        dir_name: &dir_name,
+        remote_url: &remote_url,
+        git_branch: &git_branch,
+        model_name: &model_name,
+        added,
+        removed,
+        token_info: &token_info,
+        token_percent_info: &token_percent_info,
+        stats: &stats,
+        cost,
+    };
 
     for line_cfg in &cfg.lines {
         let segments: Vec<String> = line_cfg.fields.iter().filter_map(|field| {
-            render_field(field, &colors, &dir_name, &remote_url, &git_branch,
-                         &model_name, added, removed, &token_info, &stats)
+            render_field(field, &ctx)
         }).collect();
 
         if !segments.is_empty() {
