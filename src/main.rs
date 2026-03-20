@@ -36,6 +36,8 @@ struct RenderContext<'a> {
     token_percent_info: &'a Option<String>,
     stats: &'a Option<process::ClaudeStats>,
     cost: Option<f64>,
+    rate_5h: &'a Option<tokens::RateLimitInfo>,
+    rate_7d: &'a Option<tokens::RateLimitInfo>,
 }
 
 fn render_field(field: &str, ctx: &RenderContext) -> Option<String> {
@@ -50,6 +52,8 @@ fn render_field(field: &str, ctx: &RenderContext) -> Option<String> {
         "cpu" => ctx.stats.as_ref().map(|s| format!("{}CPU {}{}", c.cpu, s.cpu, COLOR_RESET)),
         "ram" => ctx.stats.as_ref().map(|s| format!("{}RAM {}{}", c.ram, s.ram, COLOR_RESET)),
         "cost" => ctx.cost.map(|v| format!("{}${:.2}{}", c.cost, v, COLOR_RESET)),
+        "rate-5h" => ctx.rate_5h.as_ref().map(|r| format!("{}5h: {:.0}% → {}{}", c.rate_5h, r.used_pct, r.resets_in, COLOR_RESET)),
+        "rate-7d" => ctx.rate_7d.as_ref().map(|r| format!("{}7d: {:.0}% → {}{}", c.rate_7d, r.used_pct, r.resets_in, COLOR_RESET)),
         _ => None,
     }
 }
@@ -79,14 +83,20 @@ fn main() {
     let flavor = detect_flavor();
     let colors = resolve_colors(flavor, &cfg.colors);
 
+    let needs_git = cfg.has_field("dir") || cfg.has_field("branch");
+    let needs_diff = cfg.has_field("diff");
+    let needs_stats = cfg.has_field("cpu") || cfg.has_field("ram");
+
     let dir_name = get_dir_name(&input.cwd);
-    let (git_branch, remote_url) = git::get_git_info(&input.cwd);
+    let (git_branch, remote_url) = if needs_git { git::get_git_info(&input.cwd) } else { (String::new(), None) };
     let model_name = input.model.display_name.split('(').next().unwrap_or(&input.model.display_name).trim().to_string();
-    let (added, removed) = diff::calculate_net_diff(&input.transcript_path);
-    let token_info = tokens::get_token_info(&input);
-    let token_percent_info = tokens::get_token_percent_info(&input);
-    let stats = process::get_claude_stats(&input.transcript_path);
-    let cost = tokens::get_cost(&input);
+    let (added, removed) = if needs_diff { diff::calculate_net_diff(&input.transcript_path) } else { (0, 0) };
+    let token_info = if cfg.has_field("tokens") { tokens::get_token_info(&input) } else { None };
+    let token_percent_info = if cfg.has_field("tokens-percent") { tokens::get_token_percent_info(&input) } else { None };
+    let stats = if needs_stats { process::get_claude_stats(&input.transcript_path) } else { None };
+    let cost = if cfg.has_field("cost") { tokens::get_cost(&input) } else { None };
+    let rate_5h = if cfg.has_field("rate-5h") { tokens::get_rate_limit_5h(&input) } else { None };
+    let rate_7d = if cfg.has_field("rate-7d") { tokens::get_rate_limit_7d(&input) } else { None };
 
     let ctx = RenderContext {
         colors: &colors,
@@ -100,6 +110,8 @@ fn main() {
         token_percent_info: &token_percent_info,
         stats: &stats,
         cost,
+        rate_5h: &rate_5h,
+        rate_7d: &rate_7d,
     };
 
     for line_cfg in &cfg.lines {

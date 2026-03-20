@@ -1,10 +1,10 @@
 # claude-statusline
 
-A custom statusline for [Claude Code](https://claude.ai/code) showing git info, session diff, model, token usage, and process stats.
+A custom statusline for [Claude Code](https://claude.ai/code) showing git info, session diff, model, token usage, and rate limits.
 
 ```
-my-project | main | +249 -9 | Opus 4.6 | ████░░░░ 79k/200k
-CPU 12.3% | RAM 500MB
+my-project | main | +249 -9 | Opus 4.6 | ██▃▁▁▁▁▁ 79k/1000k
+5h: 7% → 2h 41m | 7d: 43% → 4d 12h
 ```
 
 ## Installation
@@ -52,8 +52,8 @@ cargo test
 - **Session diff** — net lines added/removed (excludes plan mode files)
 - **Model name**
 - **Token usage** — progress bar with current/total
-- **CPU usage** — Claude process CPU percentage
-- **RAM usage** — Claude process memory in MB
+- **Rate limits** — 5-hour and 7-day usage with reset countdown
+- **CPU/RAM usage** — Claude process stats (configurable)
 - **Theme-aware colors** — auto-detects light/dark mode
 - **Performance caching** — avoids re-parsing transcript and process tree
 
@@ -78,7 +78,7 @@ statusline --fields  # list available fields and colors
 {
   "lines": [
     { "fields": ["dir", "branch", "diff", "model", "tokens"], "separator": "|" },
-    { "fields": ["cpu", "ram"], "separator": "|" }
+    { "fields": ["rate-5h", "rate-7d"], "separator": "|" }
   ],
   "colors": {
     "dir": "teal",
@@ -89,6 +89,8 @@ statusline --fields  # list available fields and colors
     "tokens": "peach",
     "cpu": "subtext0",
     "ram": "subtext0",
+    "rate-5h": "subtext0",
+    "rate-7d": "subtext0",
     "separator": "text"
   }
 }
@@ -109,6 +111,8 @@ All fields are optional — missing fields use defaults. Colors can be [Catppucc
 | `cpu` | Claude CPU usage |
 | `ram` | Claude RAM usage |
 | `cost` | Session cost in USD |
+| `rate-5h` | 5-hour rate limit usage + reset countdown |
+| `rate-7d` | 7-day rate limit usage + reset countdown |
 
 ### Available colors
 

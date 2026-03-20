@@ -16,6 +16,12 @@ pub struct LineConfig {
     pub separator: String,
 }
 
+impl Config {
+    pub fn has_field(&self, name: &str) -> bool {
+        self.lines.iter().any(|l| l.fields.iter().any(|f| f == name))
+    }
+}
+
 fn default_lines() -> Vec<LineConfig> {
     vec![
         LineConfig {
@@ -24,7 +30,7 @@ fn default_lines() -> Vec<LineConfig> {
             separator: "|".to_string(),
         },
         LineConfig {
-            fields: vec!["cpu", "ram"]
+            fields: vec!["rate-5h", "rate-7d"]
                 .into_iter().map(String::from).collect(),
             separator: "\u{2014}".to_string(),
         },
@@ -37,7 +43,10 @@ pub fn default_config() -> Config {
         colors: [
             ("dir", "teal"), ("branch", "blue"), ("added", "green"),
             ("removed", "red"), ("model", "mauve"), ("tokens", "peach"),
-            ("cpu", "subtext0"), ("ram", "subtext0"), ("separator", "text"),
+            ("tokens-percent", "peach"), ("cost", "green"),
+            ("cpu", "subtext0"), ("ram", "subtext0"),
+            ("rate-5h", "subtext0"), ("rate-7d", "subtext0"),
+            ("separator", "text"),
         ].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
     }
 }
@@ -93,6 +102,8 @@ pub fn print_fields() {
     println!("  cpu              Claude CPU usage");
     println!("  ram              Claude RAM usage");
     println!("  cost             session cost in USD");
+    println!("  rate-5h          5-hour rate limit usage + reset time");
+    println!("  rate-7d          7-day rate limit usage + reset time");
     println!();
     println!("Colors (catppuccin):");
     println!("  rosewater, flamingo, pink, mauve, red, maroon, peach, yellow,");

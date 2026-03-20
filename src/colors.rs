@@ -19,6 +19,8 @@ pub struct Colors {
     pub ram: String,
     pub tokens_percent: String,
     pub cost: String,
+    pub rate_5h: String,
+    pub rate_7d: String,
     pub sep: String,
 }
 
@@ -99,6 +101,8 @@ pub fn resolve_colors(flavor: &Flavor, color_map: &HashMap<String, String>) -> C
         ram: lookup(flavor, color_map, "ram", flavor.colors.subtext0),
         tokens_percent: lookup(flavor, color_map, "tokens-percent", flavor.colors.peach),
         cost: lookup(flavor, color_map, "cost", flavor.colors.green),
+        rate_5h: lookup(flavor, color_map, "rate-5h", flavor.colors.subtext0),
+        rate_7d: lookup(flavor, color_map, "rate-7d", flavor.colors.subtext0),
         sep: lookup(flavor, color_map, "separator", flavor.colors.text),
     }
 }
