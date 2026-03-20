@@ -52,8 +52,8 @@ fn render_field(field: &str, ctx: &RenderContext) -> Option<String> {
         "cpu" => ctx.stats.as_ref().map(|s| format!("{}CPU {}{}", c.cpu, s.cpu, COLOR_RESET)),
         "ram" => ctx.stats.as_ref().map(|s| format!("{}RAM {}{}", c.ram, s.ram, COLOR_RESET)),
         "cost" => ctx.cost.map(|v| format!("{}${:.2}{}", c.cost, v, COLOR_RESET)),
-        "rate-5h" => ctx.rate_5h.as_ref().map(|r| format!("{}5h: {:.0}% → {}{}", c.rate_5h, r.used_pct, r.resets_in, COLOR_RESET)),
-        "rate-7d" => ctx.rate_7d.as_ref().map(|r| format!("{}7d: {:.0}% → {}{}", c.rate_7d, r.used_pct, r.resets_in, COLOR_RESET)),
+        "rate-5h" => ctx.rate_5h.as_ref().map(|r| format!("{}5h: {:.0}% → {}{}", c.rate_5h, 100.0 - r.used_pct, r.resets_in, COLOR_RESET)),
+        "rate-7d" => ctx.rate_7d.as_ref().map(|r| format!("{}7d: {:.0}% → {}{}", c.rate_7d, 100.0 - r.used_pct, r.resets_in, COLOR_RESET)),
         _ => None,
     }
 }
