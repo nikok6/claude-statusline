@@ -68,8 +68,8 @@ If installed via `install.sh`, a Claude Code session start hook is added that ch
 Optionally create `~/.claude/statusline.json` to customize fields, layout, and colors:
 
 ```bash
-statusline --init    # generate default config
-statusline --fields  # list available fields and colors
+~/.claude/statusline --init    # generate default config
+~/.claude/statusline --fields  # list available fields and colors
 ```
 
 ### Example config
@@ -116,4 +116,4 @@ All fields are optional — missing fields use defaults. Colors can be [Catppucc
 
 ### Available colors
 
-Any [Catppuccin](https://catppuccin.com/palette) color name or hex value (`#rrggbb`). Run `statusline --fields` to see the full list.
+Any [Catppuccin](https://catppuccin.com/palette) color name or hex value (`#rrggbb`). Run `~/.claude/statusline --fields` to see the full list.
