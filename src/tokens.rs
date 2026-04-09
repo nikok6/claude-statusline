@@ -107,7 +107,7 @@ fn format_reset_time(resets_at: u64) -> String {
     let secs = resets_at - now;
     let hours = secs / 3600;
     let mins = (secs % 3600) / 60;
-    if hours > 24 {
+    if hours >= 24 {
         format!("{}d{}h", hours / 24, hours % 24)
     } else if hours > 0 {
         format!("{}h{}m", hours, mins)

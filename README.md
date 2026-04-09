@@ -4,7 +4,7 @@ A custom statusline for [Claude Code](https://claude.ai/code) showing git info, 
 
 ```
 my-project | main | +249 -9 | Opus 4.6 | ██▃▁▁▁▁▁ 79k/1000k
-5h: 7% → 2h 41m | 7d: 43% → 4d 12h
+5h: 93% → 2h41m | 7d: 57% → 4d12h
 ```
 
 ## Installation
@@ -111,8 +111,8 @@ All fields are optional — missing fields use defaults. Colors can be [Catppucc
 | `cpu` | Claude CPU usage |
 | `ram` | Claude RAM usage |
 | `cost` | Session cost in USD |
-| `rate-5h` | 5-hour rate limit usage + reset countdown |
-| `rate-7d` | 7-day rate limit usage + reset countdown |
+| `rate-5h` | 5-hour rate limit remaining + reset countdown |
+| `rate-7d` | 7-day rate limit remaining + reset countdown |
 
 ### Available colors
 

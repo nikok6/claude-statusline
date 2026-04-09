@@ -102,8 +102,8 @@ pub fn print_fields() {
     println!("  cpu              Claude CPU usage");
     println!("  ram              Claude RAM usage");
     println!("  cost             session cost in USD");
-    println!("  rate-5h          5-hour rate limit usage + reset time");
-    println!("  rate-7d          7-day rate limit usage + reset time");
+    println!("  rate-5h          5-hour rate limit remaining + reset time");
+    println!("  rate-7d          7-day rate limit remaining + reset time");
     println!();
     println!("Colors (catppuccin):");
     println!("  rosewater, flamingo, pink, mauve, red, maroon, peach, yellow,");
