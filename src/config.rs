@@ -8,6 +8,18 @@ pub struct Config {
     pub lines: Vec<LineConfig>,
     #[serde(default)]
     pub colors: HashMap<String, String>,
+    #[serde(default)]
+    pub track_usage: TrackUsageConfig,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct TrackUsageConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub output_path: Option<String>,
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -48,6 +60,7 @@ pub fn default_config() -> Config {
             ("rate-5h", "subtext0"), ("rate-7d", "subtext0"),
             ("separator", "text"),
         ].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        track_usage: TrackUsageConfig::default(),
     }
 }
 

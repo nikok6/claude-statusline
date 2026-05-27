@@ -77,13 +77,11 @@ pub fn get_claude_stats(transcript_path: &str) -> Option<ClaudeStats> {
     let cached = cache::load_raw(&cache_path);
 
     // Try cached PID first — single ps call validates + gets stats
-    if let Some(ref c) = cached {
-        if let Some(pid) = c.claude_pid {
-            if let Some(stats) = get_stats_for_pid(pid) {
+    if let Some(ref c) = cached
+        && let Some(pid) = c.claude_pid
+            && let Some(stats) = get_stats_for_pid(pid) {
                 return Some(stats);
             }
-        }
-    }
 
     // Cache miss or stale PID: walk the process tree
     let pid = find_claude_pid()?;

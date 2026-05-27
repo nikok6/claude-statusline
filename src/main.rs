@@ -5,6 +5,7 @@ mod diff;
 mod git;
 mod process;
 mod tokens;
+mod usage;
 
 use colors::{COLOR_RESET, detect_flavor, resolve_colors};
 use std::io;
@@ -123,5 +124,12 @@ fn main() {
             let sep = format!(" {}{}{} ", colors.sep, line_cfg.separator, COLOR_RESET);
             println!("{}", segments.join(&sep));
         }
+    }
+
+    if cfg.track_usage.enabled {
+        usage::update(
+            cfg.track_usage.output_path.as_deref(),
+            cfg.track_usage.timezone.as_deref(),
+        );
     }
 }

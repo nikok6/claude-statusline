@@ -19,11 +19,10 @@ fn read_remote_url(git_dir: &std::path::Path) -> Option<String> {
             in_origin = true;
         } else if trimmed.starts_with('[') {
             in_origin = false;
-        } else if in_origin {
-            if let Some(url) = trimmed.strip_prefix("url = ") {
+        } else if in_origin
+            && let Some(url) = trimmed.strip_prefix("url = ") {
                 return Some(normalize_remote_url(url));
             }
-        }
     }
     None
 }

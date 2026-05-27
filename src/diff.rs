@@ -25,7 +25,14 @@ struct ToolUseResult {
     new_string: Option<String>,
 }
 
-fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, Vec<(String, String)>>) {
+/// (file → original contents, file → final contents, file → pending edit chains).
+type ParsedTranscript = (
+    HashMap<String, String>,
+    HashMap<String, String>,
+    HashMap<String, Vec<(String, String)>>,
+);
+
+fn parse_transcript(transcript_path: &str) -> ParsedTranscript {
     let file = match File::open(transcript_path) {
         Ok(f) => f,
         Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
@@ -40,13 +47,13 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
     let mut file_finals: HashMap<String, String> = HashMap::new();
     let mut edit_chains: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         if !line.contains("\"toolUseResult\"") {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
-            if let Some(result) = entry.tool_use_result {
-                if let Some(ref file_path) = result.file_path {
+        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line)
+            && let Some(result) = entry.tool_use_result
+                && let Some(ref file_path) = result.file_path {
                     if exclude_dirs.iter().any(|d| file_path.starts_with(d)) {
                         continue;
                     }
@@ -96,8 +103,6 @@ fn parse_transcript(transcript_path: &str) -> (HashMap<String, String>, HashMap<
                         }
                     }
                 }
-            }
-        }
     }
 
     (file_originals, file_finals, edit_chains)

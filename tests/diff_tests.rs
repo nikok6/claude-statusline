@@ -89,11 +89,10 @@ fn run_statusline(transcript_path: &str, test_file: &str) -> (usize, usize) {
             }
         } else if c == '-' {
             let num: String = stripped[i+1..].chars().take_while(|c| c.is_numeric()).collect();
-            if !num.is_empty() {
-                if let Ok(n) = num.parse() {
+            if !num.is_empty()
+                && let Ok(n) = num.parse() {
                     removed = n;
                 }
-            }
         }
     }
 
