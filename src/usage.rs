@@ -155,6 +155,7 @@ fn price_for(model: &str) -> Pricing {
     if model.starts_with("claude-opus-4-5")
         || model.starts_with("claude-opus-4-6")
         || model.starts_with("claude-opus-4-7")
+        || model.starts_with("claude-opus-4-8")
     {
         Pricing { input: 5.0, output: 25.0, cache_5m: 6.25, cache_1h: 10.0, cache_read: 0.50 }
     } else if model.starts_with("claude-opus-4") {
