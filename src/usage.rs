@@ -152,7 +152,9 @@ impl Pricing {
 fn price_for(model: &str) -> Pricing {
     // Source: https://platform.claude.com/docs/en/about-claude/pricing
     // Opus 4.5+ uses new lower pricing; Opus 4.0/4.1 keep the legacy rate.
-    if model.starts_with("claude-opus-4-5")
+    if model.starts_with("claude-fable-5") || model.starts_with("claude-mythos-5") {
+        Pricing { input: 10.0, output: 50.0, cache_5m: 12.50, cache_1h: 20.0, cache_read: 1.0 }
+    } else if model.starts_with("claude-opus-4-5")
         || model.starts_with("claude-opus-4-6")
         || model.starts_with("claude-opus-4-7")
         || model.starts_with("claude-opus-4-8")
