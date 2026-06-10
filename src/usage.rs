@@ -52,12 +52,22 @@ struct CacheCreation {
     ephemeral_1h_input_tokens: Option<u64>,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct Tokens {
     input_tokens: u64,
     output_tokens: u64,
     cache_creation_tokens: u64,
     cache_read_tokens: u64,
+    // 5m/1h split of cache_creation_tokens, kept so an entry folded while its
+    // model had no known pricing can be costed exactly once a price is added.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    cache_5m_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    cache_1h_tokens: u64,
     cost_usd: f64,
 }
 
@@ -67,7 +77,27 @@ impl Tokens {
         self.output_tokens += other.output_tokens;
         self.cache_creation_tokens += other.cache_creation_tokens;
         self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_5m_tokens += other.cache_5m_tokens;
+        self.cache_1h_tokens += other.cache_1h_tokens;
         self.cost_usd += other.cost_usd;
+    }
+
+    fn total_tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens + self.cache_creation_tokens + self.cache_read_tokens
+    }
+
+    fn cost_with(&self, p: &Pricing) -> f64 {
+        // Creation tokens the recorded split doesn't cover (entries cached
+        // before the split existed, a missing breakdown, or a reported total
+        // exceeding 5m+1h) are billed at the 5m rate, so no creation tokens
+        // are silently costed at zero.
+        let m5 = self.cache_5m_tokens
+            + self.cache_creation_tokens.saturating_sub(self.cache_5m_tokens + self.cache_1h_tokens);
+        (self.input_tokens as f64) * p.input / 1_000_000.0
+            + (self.output_tokens as f64) * p.output / 1_000_000.0
+            + (m5 as f64) * p.cache_5m / 1_000_000.0
+            + (self.cache_1h_tokens as f64) * p.cache_1h / 1_000_000.0
+            + (self.cache_read_tokens as f64) * p.cache_read / 1_000_000.0
     }
 }
 
@@ -75,6 +105,9 @@ impl Tokens {
 struct Bucket {
     #[serde(flatten)]
     totals: Tokens,
+    // Tokens counted under models price_for doesn't know (costed at $0 so far).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    unpriced_tokens: u64,
     by_model: BTreeMap<String, Tokens>,
 }
 
@@ -149,24 +182,34 @@ impl Pricing {
     }
 }
 
+/// Matches a transcript model string against a known id: exact, or followed by
+/// a date snapshot (`claude-opus-4-1-20250805`) and/or a bracket tag
+/// (`claude-fable-5[1m]`). Bare version prefixes deliberately do NOT match, so
+/// a future `claude-opus-4-9` stays unpriced (and is repriced once listed)
+/// instead of silently inheriting another version's rates.
+fn is_model(model: &str, id: &str) -> bool {
+    let model = model.split('[').next().unwrap_or(model);
+    let Some(rest) = model.strip_prefix(id) else { return false };
+    rest.is_empty()
+        || (rest.starts_with("-2") && rest.len() >= 5 && rest[1..].bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn price_for(model: &str) -> Pricing {
     // Source: https://platform.claude.com/docs/en/about-claude/pricing
-    // Opus 4.5+ uses new lower pricing; Opus 4.0/4.1 keep the legacy rate.
-    if model.starts_with("claude-fable-5") || model.starts_with("claude-mythos-5") {
+    // Each version is listed explicitly — see is_model. Opus 4.5+ uses the new
+    // lower pricing; Opus 4.0/4.1 keep the legacy rate.
+    let m = |id: &str| is_model(model, id);
+    if m("claude-fable-5") || m("claude-mythos-5") {
         Pricing { input: 10.0, output: 50.0, cache_5m: 12.50, cache_1h: 20.0, cache_read: 1.0 }
-    } else if model.starts_with("claude-opus-4-5")
-        || model.starts_with("claude-opus-4-6")
-        || model.starts_with("claude-opus-4-7")
-        || model.starts_with("claude-opus-4-8")
-    {
+    } else if m("claude-opus-4-5") || m("claude-opus-4-6") || m("claude-opus-4-7") || m("claude-opus-4-8") {
         Pricing { input: 5.0, output: 25.0, cache_5m: 6.25, cache_1h: 10.0, cache_read: 0.50 }
-    } else if model.starts_with("claude-opus-4") {
+    } else if m("claude-opus-4") || m("claude-opus-4-1") {
         Pricing { input: 15.0, output: 75.0, cache_5m: 18.75, cache_1h: 30.0, cache_read: 1.50 }
-    } else if model.starts_with("claude-sonnet-4") {
+    } else if m("claude-sonnet-4") || m("claude-sonnet-4-5") || m("claude-sonnet-4-6") {
         Pricing { input: 3.0, output: 15.0, cache_5m: 3.75, cache_1h: 6.0, cache_read: 0.30 }
-    } else if model.starts_with("claude-haiku-4") {
+    } else if m("claude-haiku-4-5") {
         Pricing { input: 1.0, output: 5.0, cache_5m: 1.25, cache_1h: 2.0, cache_read: 0.10 }
-    } else if model.starts_with("claude-haiku-3-5") || model.starts_with("claude-3-5-haiku") {
+    } else if m("claude-haiku-3-5") || m("claude-3-5-haiku") {
         Pricing { input: 0.80, output: 4.0, cache_5m: 1.00, cache_1h: 1.60, cache_read: 0.08 }
     } else {
         Pricing::zero()
@@ -178,32 +221,66 @@ fn compute_tokens(model: &str, u: &Usage) -> Tokens {
     let output = u.output_tokens.unwrap_or(0);
     let cache_read = u.cache_read_input_tokens.unwrap_or(0);
     let cache_total = u.cache_creation_input_tokens.unwrap_or(0);
+    // Store the breakdown as reported; cost_with bills any creation tokens it
+    // doesn't cover (missing/short breakdown) at the 5m rate.
     let (cache_5m, cache_1h) = match &u.cache_creation {
-        Some(c) => {
-            let m5 = c.ephemeral_5m_input_tokens.unwrap_or(0);
-            let h1 = c.ephemeral_1h_input_tokens.unwrap_or(0);
-            // Bill any creation tokens not covered by the breakdown (older
-            // formats, or a reported total exceeding 5m+1h) at the 5m rate, so
-            // no creation tokens are silently costed at zero.
-            (m5 + cache_total.saturating_sub(m5 + h1), h1)
-        }
-        None => (cache_total, 0),
+        Some(c) => (c.ephemeral_5m_input_tokens.unwrap_or(0), c.ephemeral_1h_input_tokens.unwrap_or(0)),
+        None => (0, 0),
     };
 
-    let p = price_for(model);
-    let cost = (input as f64) * p.input / 1_000_000.0
-        + (output as f64) * p.output / 1_000_000.0
-        + (cache_5m as f64) * p.cache_5m / 1_000_000.0
-        + (cache_1h as f64) * p.cache_1h / 1_000_000.0
-        + (cache_read as f64) * p.cache_read / 1_000_000.0;
-
-    Tokens {
+    let mut t = Tokens {
         input_tokens: input,
         output_tokens: output,
         cache_creation_tokens: cache_total,
         cache_read_tokens: cache_read,
-        cost_usd: cost,
+        cache_5m_tokens: cache_5m,
+        cache_1h_tokens: cache_1h,
+        cost_usd: 0.0,
+    };
+    t.cost_usd = t.cost_with(&price_for(model));
+    t
+}
+
+/// Re-derives cost for model entries that were folded while their model had no
+/// known pricing (cost 0 despite tokens), so adding the model to `price_for`
+/// retroactively prices the cached history on the next run. Also refreshes the
+/// bucket's `unpriced_tokens` rollup. Returns true if anything changed.
+fn reprice_bucket(b: &mut Bucket) -> bool {
+    let mut changed = false;
+    let mut unpriced = 0u64;
+    for (model, t) in b.by_model.iter_mut() {
+        if t.cost_usd == 0.0 && t.total_tokens() > 0 {
+            let cost = t.cost_with(&price_for(model));
+            if cost > 0.0 {
+                t.cost_usd = cost;
+                b.totals.cost_usd += cost;
+                changed = true;
+            } else {
+                unpriced += t.total_tokens();
+            }
+        }
     }
+    if b.unpriced_tokens != unpriced {
+        b.unpriced_tokens = unpriced;
+        changed = true;
+    }
+    changed
+}
+
+fn reprice_cache(cache: &mut Cache) -> bool {
+    let mut changed = reprice_bucket(&mut cache.totals);
+    for b in cache
+        .daily
+        .values_mut()
+        .chain(cache.weekly.values_mut())
+        .chain(cache.monthly.values_mut())
+    {
+        changed |= reprice_bucket(b);
+    }
+    for s in cache.sessions.values_mut() {
+        changed |= reprice_bucket(&mut s.bucket);
+    }
+    changed
 }
 
 /// Resolves a transcript timestamp to the calendar date its usage should be
@@ -590,6 +667,13 @@ fn try_update(custom_path: Option<&str>, tz_spec: Option<&str>) -> std::io::Resu
         cache_dirty = true;
     }
     cache.files = alive;
+
+    // Prices entries that were unpriced when folded (e.g. a model released
+    // after the binary was built) once an updated binary knows their rate.
+    if reprice_cache(&mut cache) {
+        cache_dirty = true;
+        summary_dirty = true;
+    }
 
     if summary_dirty {
         prune_sessions(&mut cache);

@@ -418,3 +418,170 @@ fn sessions_are_capped_to_most_recent() {
 
     fs::remove_dir_all(&home).ok();
 }
+
+#[test]
+fn unknown_model_is_unpriced_then_repriced_after_update() {
+    let home = enabled("UTC");
+    // 1M tokens per category under a model price_for doesn't know.
+    let line = assistant_line(
+        "2099-03-15T10:00:00Z", "sess-up", "/work/up",
+        "claude-unknown-9", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+    );
+    write_transcript(&home, "t1", &[line]);
+    run(&home);
+
+    let s = summary(&home);
+    approx(cost(&s["totals"]), 0.0);
+    approx(cost(&s["totals"]["by_model"]["claude-unknown-9"]), 0.0);
+    // All five categories surface in the unpriced rollup (creation counted once).
+    assert_eq!(u(&s["totals"], "unpriced_tokens"), 5_000_000);
+    assert_eq!(u(bucket(&s, "daily", "2099-03-15"), "unpriced_tokens"), 5_000_000);
+    let sess = sessions(&home);
+    assert_eq!(u(&sess["sessions"]["sess-up"], "unpriced_tokens"), 5_000_000);
+
+    // Simulate updating the binary's pricing table: the cached history now sits
+    // under a model the current price_for knows. Rename it in the cache, as if
+    // the old binary had folded fable usage before fable pricing existed.
+    let cache_file = home.join(".claude/usage-cache.json");
+    let cache = fs::read_to_string(&cache_file).unwrap();
+    fs::write(&cache_file, cache.replace("claude-unknown-9", "claude-fable-5")).unwrap();
+    run(&home);
+
+    // Fable rates: input 10 + output 50 + cache_5m 12.50 + cache_1h 20 + read 1 = 93.50
+    let s = summary(&home);
+    approx(cost(&s["totals"]), 93.50);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5"]), 93.50);
+    assert!(s["totals"].get("unpriced_tokens").is_none(), "rollup cleared once priced");
+    approx(cost(bucket(&s, "daily", "2099-03-15")), 93.50);
+    approx(cost(bucket(&s, "monthly", "2099-03")), 93.50);
+    let sess = sessions(&home);
+    approx(cost(&sess["sessions"]["sess-up"]), 93.50);
+    assert!(sess["sessions"]["sess-up"].get("unpriced_tokens").is_none());
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn unknown_version_does_not_inherit_family_pricing() {
+    let home = enabled("UTC");
+    let lines = vec![
+        // A future opus version must NOT fall back to claude-opus-4 legacy rates.
+        assistant_line("2099-03-15T10:00:00Z", "s1", "/w", "claude-opus-4-9", 1_000_000, 0, 0, 0, 0),
+        // Date snapshots and bracket tags of known ids still price normally.
+        assistant_line("2099-03-15T10:01:00Z", "s1", "/w", "claude-opus-4-1-20250805", 1_000_000, 0, 0, 0, 0),
+        assistant_line("2099-03-15T10:02:00Z", "s1", "/w", "claude-fable-5[1m]", 1_000_000, 0, 0, 0, 0),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-opus-4-9"]), 0.0);
+    assert_eq!(u(&s["totals"], "unpriced_tokens"), 1_000_000);
+    approx(cost(&s["totals"]["by_model"]["claude-opus-4-1-20250805"]), 15.0);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5[1m]"]), 10.0);
+    approx(cost(&s["totals"]), 25.0);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+/// An assistant line whose usage block has a creation total but a missing or
+/// partial 5m/1h breakdown, exercising the bill-remainder-at-5m rule.
+fn assistant_line_with_breakdown(
+    ts: &str, model: &str, cache_total: u64, breakdown: Option<(u64, u64)>,
+) -> String {
+    let mut usage = json!({
+        "input_tokens": 0, "output_tokens": 0,
+        "cache_creation_input_tokens": cache_total, "cache_read_input_tokens": 0
+    });
+    if let Some((m5, h1)) = breakdown {
+        usage["cache_creation"] = json!({
+            "ephemeral_5m_input_tokens": m5, "ephemeral_1h_input_tokens": h1
+        });
+    }
+    json!({
+        "type": "assistant", "timestamp": ts, "sessionId": "s1", "cwd": "/w",
+        "message": { "model": model, "usage": usage }
+    })
+    .to_string()
+}
+
+#[test]
+fn missing_or_short_cache_breakdown_bills_remainder_at_5m() {
+    let home = enabled("UTC");
+    let lines = vec![
+        // No breakdown at all: the full 1M creation total bills at the 5m rate.
+        assistant_line_with_breakdown("2099-03-15T10:00:00Z", "claude-opus-4-7", 1_000_000, None),
+        // Breakdown covers only 800k of 1M: the 200k remainder bills at 5m.
+        assistant_line_with_breakdown(
+            "2099-03-15T10:01:00Z", "claude-opus-4-7", 1_000_000, Some((400_000, 400_000)),
+        ),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let s = summary(&home);
+    let m = &s["totals"]["by_model"]["claude-opus-4-7"];
+    // opus-4-7 cache rates: 5m 6.25, 1h 10.
+    // Line 1: 1M at 5m = 6.25. Line 2: 0.4*6.25 + 0.4*10 + 0.2*6.25 = 7.75.
+    approx(cost(m), 14.0);
+    // The split is stored as reported, not inflated by the billed remainder.
+    assert_eq!(u(m, "cache_5m_tokens"), 400_000);
+    assert_eq!(u(m, "cache_1h_tokens"), 400_000);
+    assert_eq!(u(m, "cache_creation_tokens"), 2_000_000);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn legacy_cache_entry_without_split_reprices_remainder_at_5m() {
+    let home = enabled("UTC");
+    // A cache written by an older binary: no cache_5m/1h split fields, and
+    // cost 0 because the model's pricing wasn't known yet. No transcripts.
+    let tokens = json!({
+        "input_tokens": 1_000_000, "output_tokens": 0,
+        "cache_creation_tokens": 1_000_000, "cache_read_tokens": 0, "cost_usd": 0.0
+    });
+    let bkt = json!({
+        "input_tokens": 1_000_000, "output_tokens": 0,
+        "cache_creation_tokens": 1_000_000, "cache_read_tokens": 0, "cost_usd": 0.0,
+        "by_model": { "claude-fable-5": tokens }
+    });
+    let cache = json!({
+        "files": {}, "totals": bkt.clone(),
+        "daily": { "2099-03-15": bkt }, "weekly": {}, "monthly": {}, "sessions": {}
+    });
+    fs::write(home.join(".claude/usage-cache.json"), cache.to_string()).unwrap();
+    run(&home);
+
+    // fable: 1M input * $10 + 1M creation billed wholly at the 5m rate $12.50.
+    let s = summary(&home);
+    approx(cost(&s["totals"]), 22.50);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5"]), 22.50);
+    assert!(s["totals"].get("unpriced_tokens").is_none());
+    approx(cost(bucket(&s, "daily", "2099-03-15")), 22.50);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn steady_state_run_does_not_rewrite_outputs() {
+    let home = enabled("UTC");
+    // Unpriced usage is the case most at risk of a rewrite loop: the reprice
+    // pass re-derives unpriced_tokens every run and must not report a change.
+    let line = assistant_line(
+        "2099-03-15T10:00:00Z", "s1", "/w", "claude-unknown-9", 1_000_000, 0, 0, 0, 0,
+    );
+    write_transcript(&home, "t1", &[line]);
+    run(&home);
+    assert_eq!(u(&summary(&home)["totals"], "unpriced_tokens"), 1_000_000);
+
+    // Nothing changed since: a second run must not re-fold or rewrite outputs.
+    fs::remove_file(home.join(".claude/usage-summary.json")).unwrap();
+    run(&home);
+    assert!(
+        !home.join(".claude/usage-summary.json").exists(),
+        "summary rewritten on a no-op run"
+    );
+
+    fs::remove_dir_all(&home).ok();
+}
