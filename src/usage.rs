@@ -6,17 +6,15 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-/// Scratch cache for incremental parsing, kept beside the summary so that a
-/// custom `output_path` (e.g. a bind-mounted volume) keeps the cache and outputs
-/// together — and so concurrent writers sharing one output location share one
-/// lock. Scoped per output location, so distinct configs/homes don't corrupt
-/// each other's aggregates. Falls back to a fixed /tmp path if no home/path.
+/// Scratch cache for incremental parsing, kept in the output directory so that
+/// a custom `output_path` (e.g. a bind-mounted volume) keeps the cache and
+/// outputs together — and so concurrent writers sharing one output location
+/// share one lock. Scoped per output location, so distinct configs/homes don't
+/// corrupt each other's aggregates. Falls back to a fixed /tmp path if no
+/// home/path.
 fn cache_path(custom_path: Option<&str>) -> PathBuf {
-    summary_path(custom_path)
-        .as_deref()
-        .and_then(|p| p.parent())
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(|parent| parent.join("usage-cache.json"))
+    output_dir(custom_path)
+        .map(|d| d.join("usage-cache.json"))
         .unwrap_or_else(|| PathBuf::from("/tmp/statusline_usage_cache.json"))
 }
 
@@ -338,26 +336,21 @@ fn expand_tilde(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-fn summary_path(custom: Option<&str>) -> Option<PathBuf> {
+/// Directory holding the three output files. `output_path` always names a
+/// directory (created on demand); default is `~/.claude/usage`.
+fn output_dir(custom: Option<&str>) -> Option<PathBuf> {
     if let Some(p) = custom {
         return Some(expand_tilde(p));
     }
-    std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".claude/usage-summary.json"))
+    std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".claude/usage"))
+}
+
+fn summary_path(custom: Option<&str>) -> Option<PathBuf> {
+    output_dir(custom).map(|d| d.join("usage-summary.json"))
 }
 
 fn sessions_path(custom: Option<&str>) -> Option<PathBuf> {
-    let p = summary_path(custom)?;
-    let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("usage-summary.json");
-    // Derive the sessions filename from the summary's, so a custom output_path
-    // basename doesn't collide with other configs sharing the directory.
-    // Default "usage-summary.json" -> "usage-sessions.json".
-    let sessions_name = if name.contains("summary") {
-        name.replace("summary", "sessions")
-    } else {
-        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("usage");
-        format!("{stem}.sessions.json")
-    };
-    Some(p.with_file_name(sessions_name))
+    output_dir(custom).map(|d| d.join("usage-sessions.json"))
 }
 
 fn list_transcripts() -> Vec<PathBuf> {

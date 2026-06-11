@@ -111,11 +111,11 @@ fn read_json(path: &Path) -> Value {
 }
 
 fn summary(home: &Path) -> Value {
-    read_json(&home.join(".claude/usage-summary.json"))
+    read_json(&home.join(".claude/usage/usage-summary.json"))
 }
 
 fn sessions(home: &Path) -> Value {
-    read_json(&home.join(".claude/usage-sessions.json"))
+    read_json(&home.join(".claude/usage/usage-sessions.json"))
 }
 
 /// Looks up a daily/weekly/monthly bucket by its key.
@@ -284,9 +284,7 @@ fn disabled_tracking_writes_no_files() {
     write_transcript(&home, "t1", &[line]);
     run(&home);
 
-    assert!(!home.join(".claude/usage-summary.json").exists());
-    assert!(!home.join(".claude/usage-sessions.json").exists());
-    assert!(!home.join(".claude/usage-cache.json").exists());
+    assert!(!home.join(".claude/usage").exists());
 
     fs::remove_dir_all(&home).ok();
 }
@@ -364,18 +362,18 @@ fn session_first_last_seen_orders_mixed_timestamp_formats() {
 }
 
 #[test]
-fn custom_output_path_places_sessions_and_cache_alongside_summary() {
+fn custom_output_path_is_a_directory_holding_all_three_files() {
     let home = std::env::temp_dir().join(format!("sl_usage_out_{}_{}", std::process::id(), unique_id()));
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(home.join(".claude/projects/proj")).unwrap();
-    let out_dir = home.join("out");
-    let summary_file = out_dir.join("opus-summary.json");
+    // Directory that does not exist yet.
+    let out_dir = home.join("out/usage");
     let config = json!({
         "lines": [],
         "track_usage": {
             "enabled": true,
             "timezone": "UTC",
-            "output_path": summary_file.to_str().unwrap()
+            "output_path": out_dir.to_str().unwrap()
         }
     });
     fs::write(home.join(".claude/statusline.json"), config.to_string()).unwrap();
@@ -384,14 +382,11 @@ fn custom_output_path_places_sessions_and_cache_alongside_summary() {
     write_transcript(&home, "t1", &[line]);
     run(&home);
 
-    // Summary at the custom path.
-    assert!(summary_file.exists(), "summary at custom path");
-    // Sessions name derived from the summary basename (summary -> sessions), same dir.
-    assert!(out_dir.join("opus-sessions.json").exists(), "derived sessions name beside summary");
-    assert!(!out_dir.join("usage-sessions.json").exists(), "not the fixed default sessions name");
-    // Cache co-located with the outputs, not pinned to $HOME/.claude.
-    assert!(out_dir.join("usage-cache.json").exists(), "cache beside outputs");
-    assert!(!home.join(".claude/usage-cache.json").exists(), "cache not in $HOME/.claude");
+    assert!(out_dir.join("usage-summary.json").exists(), "summary inside directory");
+    assert!(out_dir.join("usage-sessions.json").exists(), "sessions inside directory");
+    assert!(out_dir.join("usage-cache.json").exists(), "cache inside directory");
+    // Nothing at the default location.
+    assert!(!home.join(".claude/usage").exists(), "default dir untouched with custom path");
 
     fs::remove_dir_all(&home).ok();
 }
@@ -442,7 +437,7 @@ fn unknown_model_is_unpriced_then_repriced_after_update() {
     // Simulate updating the binary's pricing table: the cached history now sits
     // under a model the current price_for knows. Rename it in the cache, as if
     // the old binary had folded fable usage before fable pricing existed.
-    let cache_file = home.join(".claude/usage-cache.json");
+    let cache_file = home.join(".claude/usage/usage-cache.json");
     let cache = fs::read_to_string(&cache_file).unwrap();
     fs::write(&cache_file, cache.replace("claude-unknown-9", "claude-fable-5")).unwrap();
     run(&home);
@@ -550,7 +545,8 @@ fn legacy_cache_entry_without_split_reprices_remainder_at_5m() {
         "files": {}, "totals": bkt.clone(),
         "daily": { "2099-03-15": bkt }, "weekly": {}, "monthly": {}, "sessions": {}
     });
-    fs::write(home.join(".claude/usage-cache.json"), cache.to_string()).unwrap();
+    fs::create_dir_all(home.join(".claude/usage")).unwrap();
+    fs::write(home.join(".claude/usage/usage-cache.json"), cache.to_string()).unwrap();
     run(&home);
 
     // fable: 1M input * $10 + 1M creation billed wholly at the 5m rate $12.50.
@@ -576,10 +572,10 @@ fn steady_state_run_does_not_rewrite_outputs() {
     assert_eq!(u(&summary(&home)["totals"], "unpriced_tokens"), 1_000_000);
 
     // Nothing changed since: a second run must not re-fold or rewrite outputs.
-    fs::remove_file(home.join(".claude/usage-summary.json")).unwrap();
+    fs::remove_file(home.join(".claude/usage/usage-summary.json")).unwrap();
     run(&home);
     assert!(
-        !home.join(".claude/usage-summary.json").exists(),
+        !home.join(".claude/usage/usage-summary.json").exists(),
         "summary rewritten on a no-op run"
     );
 

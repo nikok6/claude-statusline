@@ -137,10 +137,10 @@ Enable in `~/.claude/statusline.json`:
 | Field | Default | Description |
 |---|---|---|
 | `enabled` | `false` | Turn tracking on/off. |
-| `output_path` | `~/.claude/usage-summary.json` | Summary location (`~/...` or absolute). The sessions file and cache live alongside it — point it at a bind mount to share across a devcontainer/host. |
+| `output_path` | `~/.claude/usage` | Directory (`~/...` or absolute, created on demand) holding the summary, sessions, and cache files — point it at a bind mount to share across a devcontainer/host. |
 | `timezone` | `local` | `local` (via `date +%z`), `UTC`, or an offset like `+07:00` / `-0800`. Affects how new data is bucketed; delete the cache to re-bucket history. |
 
-It walks `~/.claude/projects/**/*.jsonl` incrementally and writes two files:
+It walks `~/.claude/projects/**/*.jsonl` incrementally and writes two files into the output directory:
 
 - **`usage-summary.json`** — totals plus daily / weekly (ISO) / monthly buckets, each with a per-model breakdown.
 - **`usage-sessions.json`** — per-session detail (most recent 1000).
@@ -166,8 +166,8 @@ It walks `~/.claude/projects/**/*.jsonl` incrementally and writes two files:
 }
 ```
 
-Aggregates survive transcript rotation. To reset, delete the three files (default location, or beside a custom `output_path`):
+Aggregates survive transcript rotation. To reset, delete the output directory:
 
 ```bash
-rm ~/.claude/usage-{cache,summary,sessions}.json
+rm -r ~/.claude/usage
 ```
