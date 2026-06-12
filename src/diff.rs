@@ -2,14 +2,18 @@ use crate::cache;
 use serde::Deserialize;
 use similar::{ChangeTag, TextDiff};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 #[derive(Deserialize)]
-struct TranscriptEntry {
+struct LineEntry {
+    uuid: Option<String>,
+    #[serde(rename = "parentUuid")]
+    parent_uuid: Option<String>,
+    // Error results are plain strings, so parse lazily from a Value.
     #[serde(rename = "toolUseResult")]
-    tool_use_result: Option<ToolUseResult>,
+    tool_use_result: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -23,19 +27,24 @@ struct ToolUseResult {
     old_string: Option<String>,
     #[serde(rename = "newString")]
     new_string: Option<String>,
+    #[serde(rename = "structuredPatch")]
+    structured_patch: Option<Vec<Hunk>>,
 }
 
-/// (file → original contents, file → final contents, file → pending edit chains).
-type ParsedTranscript = (
-    HashMap<String, String>,
-    HashMap<String, String>,
-    HashMap<String, Vec<(String, String)>>,
-);
+#[derive(Deserialize)]
+struct Hunk {
+    #[serde(rename = "oldStart")]
+    old_start: usize,
+    #[serde(rename = "newStart")]
+    new_start: usize,
+    lines: Vec<String>,
+}
 
-fn parse_transcript(transcript_path: &str) -> ParsedTranscript {
+/// Files in per-file edit order, restricted to the active conversation branch.
+fn parse_transcript(transcript_path: &str) -> (Vec<String>, HashMap<String, Vec<ToolUseResult>>) {
     let file = match File::open(transcript_path) {
         Ok(f) => f,
-        Err(_) => return (HashMap::new(), HashMap::new(), HashMap::new()),
+        Err(_) => return (Vec::new(), HashMap::new()),
     };
 
     let exclude_dirs: Vec<String> = std::env::var("HOME")
@@ -43,69 +52,96 @@ fn parse_transcript(transcript_path: &str) -> ParsedTranscript {
         .unwrap_or_default();
 
     let reader = BufReader::new(file);
-    let mut file_originals: HashMap<String, String> = HashMap::new();
-    let mut file_finals: HashMap<String, String> = HashMap::new();
-    let mut edit_chains: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut parents: HashMap<String, Option<String>> = HashMap::new();
+    let mut last_uuid: Option<String> = None;
+    let mut records: Vec<(String, Option<String>, ToolUseResult)> = Vec::new();
 
     for line in reader.lines().map_while(Result::ok) {
-        if !line.contains("\"toolUseResult\"") {
+        if !line.contains("\"uuid\"") && !line.contains("\"toolUseResult\"") {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line)
-            && let Some(result) = entry.tool_use_result
-                && let Some(ref file_path) = result.file_path {
+        let Ok(entry) = serde_json::from_str::<LineEntry>(&line) else { continue };
+        if let Some(u) = &entry.uuid {
+            parents.insert(u.clone(), entry.parent_uuid.clone());
+            last_uuid = Some(u.clone());
+        }
+        if let Some(v) = entry.tool_use_result
+            && v.is_object()
+            && let Ok(result) = serde_json::from_value::<ToolUseResult>(v)
+                && let Some(file_path) = result.file_path.clone() {
                     if exclude_dirs.iter().any(|d| file_path.starts_with(d)) {
                         continue;
                     }
-                    if let Some(ref content) = result.content {
-                        file_originals
-                            .entry(file_path.clone())
-                            .or_insert_with(|| result.original_file.clone().unwrap_or_default());
-                        file_finals.insert(file_path.clone(), content.clone());
-                        edit_chains.remove(file_path);
-                    } else if let (Some(old_str), Some(new_str)) = (&result.old_string, &result.new_string) {
-                        let applied_to_write = if let Some(final_content) = file_finals.get_mut(file_path) {
-                            if final_content.contains(old_str.as_str()) {
-                                *final_content = final_content.replacen(old_str, new_str, 1);
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        if !applied_to_write {
-                            let chains = edit_chains.entry(file_path.clone()).or_default();
-                            let mut found = false;
-
-                            for (_original, current) in chains.iter_mut() {
-                                if current.contains(old_str.as_str()) {
-                                    *current = current.replacen(old_str, new_str, 1);
-                                    found = true;
-                                    break;
-                                }
-                            }
-
-                            if !found {
-                                // Absorb any existing chains whose current is inside this edit's old_string
-                                let mut resolved_old = old_str.clone();
-                                chains.retain(|(orig, cur)| {
-                                    if resolved_old.contains(cur.as_str()) {
-                                        resolved_old = resolved_old.replacen(cur, orig, 1);
-                                        false
-                                    } else {
-                                        true
-                                    }
-                                });
-                                chains.push((resolved_old, new_str.clone()));
-                            }
-                        }
-                    }
+                    records.push((file_path, entry.uuid.clone(), result));
                 }
     }
 
-    (file_originals, file_finals, edit_chains)
+    // The transcript is a tree: rewinding a session abandons a branch whose
+    // edits were rolled back. The active path is the parent chain of the last
+    // uuid-bearing entry. An entry is abandoned only if it hangs off the
+    // active path without being on it; entries in disconnected components
+    // (sidechains, pre-compact history) still count.
+    let mut active: HashSet<String> = HashSet::new();
+    let mut cur = last_uuid;
+    while let Some(u) = cur {
+        if !active.insert(u.clone()) {
+            break;
+        }
+        cur = parents.get(&u).cloned().flatten();
+    }
+
+    let mut memo: HashMap<String, bool> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut by_file: HashMap<String, Vec<ToolUseResult>> = HashMap::new();
+    for (file_path, uuid, result) in records {
+        if let Some(u) = &uuid
+            && is_abandoned(u, &parents, &active, &mut memo) {
+                continue;
+            }
+        if !by_file.contains_key(&file_path) {
+            order.push(file_path.clone());
+        }
+        by_file.entry(file_path).or_default().push(result);
+    }
+
+    (order, by_file)
+}
+
+fn is_abandoned(
+    uuid: &str,
+    parents: &HashMap<String, Option<String>>,
+    active: &HashSet<String>,
+    memo: &mut HashMap<String, bool>,
+) -> bool {
+    if active.contains(uuid) {
+        return false;
+    }
+    if let Some(&v) = memo.get(uuid) {
+        return v;
+    }
+    let mut chain = vec![uuid.to_string()];
+    let mut seen: HashSet<String> = chain.iter().cloned().collect();
+    let mut cur = parents.get(uuid).cloned().flatten();
+    let mut abandoned = false;
+    while let Some(p) = cur {
+        if active.contains(&p) {
+            abandoned = true;
+            break;
+        }
+        if let Some(&v) = memo.get(&p) {
+            abandoned = v;
+            break;
+        }
+        if !seen.insert(p.clone()) {
+            break;
+        }
+        chain.push(p.clone());
+        cur = parents.get(&p).cloned().flatten();
+    }
+    for c in chain {
+        memo.insert(c, abandoned);
+    }
+    abandoned
 }
 
 pub fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
@@ -117,36 +153,19 @@ pub fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
     }
 
     // Cache miss: parse and compute
-    let (file_originals, file_finals, edit_chains) = parse_transcript(transcript_path);
+    let (order, mut by_file) = parse_transcript(transcript_path);
 
     let mut added = 0;
     let mut removed = 0;
     let mut files = Vec::new();
 
-    for (file_path, chains) in &edit_chains {
-        if !std::path::Path::new(file_path).exists() {
+    for file_path in order {
+        let Some(records) = by_file.remove(&file_path) else { continue };
+        if !std::path::Path::new(&file_path).exists() {
             continue;
         }
-        files.push(file_path.clone());
-        for (original, final_content) in chains {
-            let (a, r) = compute_diff(original, final_content);
-            added += a;
-            removed += r;
-        }
-    }
-
-    for (file_path, original) in &file_originals {
-        if !std::path::Path::new(file_path).exists() {
-            continue;
-        }
-        files.push(file_path.clone());
-
-        let final_content = match file_finals.get(file_path) {
-            Some(content) => content,
-            None => continue,
-        };
-
-        let (a, r) = compute_diff(original, final_content);
+        files.push(file_path);
+        let (a, r) = diff_for_file(&records);
         added += a;
         removed += r;
     }
@@ -161,6 +180,176 @@ pub fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
         claude_pid: existing_pid,
     });
 
+    (added, removed)
+}
+
+fn diff_for_file(records: &[ToolUseResult]) -> (usize, usize) {
+    // structuredPatch is authoritative: originalFile is sometimes empty or
+    // missing even when the file had content, which would turn rewrites into
+    // pure additions. Reconstruct before/after states from the patches and
+    // fall back to oldString/newString chaining when that isn't possible.
+    if records.iter().all(|r| r.structured_patch.is_some())
+        && let Some((before, after)) = patch_reconstruct(records) {
+            return compute_diff(&join_normalized(&before), &join_normalized(&after));
+        }
+    legacy_diff(records)
+}
+
+fn split_lines(s: &str) -> Vec<String> {
+    s.lines().map(str::to_string).collect()
+}
+
+/// structuredPatch lines store tabs as two spaces; file snapshots keep real tabs.
+fn norm_ws(s: &str) -> Cow<'_, str> {
+    if s.contains('\t') { Cow::Owned(s.replace('\t', "  ")) } else { Cow::Borrowed(s) }
+}
+
+fn join_normalized(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for l in lines {
+        out.push_str(&norm_ws(l));
+        out.push('\n');
+    }
+    out
+}
+
+/// Rebuild the file's content before the first record and after the last one.
+/// Anchored at the latest full snapshot (a non-empty originalFile holds the
+/// content just before its record; a Write's content holds the content just
+/// after); earlier patches are un-applied backward, later ones applied forward.
+fn patch_reconstruct(records: &[ToolUseResult]) -> Option<(Vec<String>, Vec<String>)> {
+    let orig_anchor = records
+        .iter()
+        .rposition(|r| r.original_file.as_deref().is_some_and(|s| !s.is_empty()));
+    let content_anchor = records.iter().rposition(|r| r.content.is_some());
+
+    // (records to un-apply backward, anchor snapshot, first record to apply forward)
+    let (backward, anchor, forward) = match (orig_anchor, content_anchor) {
+        (Some(i), Some(j)) if j >= i => (j + 1, split_lines(records[j].content.as_ref()?), j + 1),
+        (Some(i), _) => (i, split_lines(records[i].original_file.as_ref()?), i),
+        (None, Some(j)) => (j + 1, split_lines(records[j].content.as_ref()?), j + 1),
+        (None, None) => return None,
+    };
+
+    let mut before = anchor.clone();
+    for r in records[..backward].iter().rev() {
+        before = apply_patch(&before, r.structured_patch.as_ref()?, true)?;
+    }
+    let mut after = anchor;
+    for r in &records[forward..] {
+        after = apply_patch(&after, r.structured_patch.as_ref()?, false)?;
+    }
+    Some((before, after))
+}
+
+fn apply_patch(lines: &[String], hunks: &[Hunk], reverse: bool) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut pos = 0usize;
+    for hunk in hunks {
+        let start = (if reverse { hunk.new_start } else { hunk.old_start }).saturating_sub(1);
+        if start < pos || start > lines.len() {
+            return None;
+        }
+        out.extend_from_slice(&lines[pos..start]);
+        pos = start;
+        for raw in &hunk.lines {
+            let tag = raw.chars().next().unwrap_or(' ');
+            let text = raw.get(1..).unwrap_or("");
+            let tag = match (reverse, tag) {
+                (true, '+') => '-',
+                (true, '-') => '+',
+                (_, t) => t,
+            };
+            match tag {
+                ' ' => {
+                    if pos >= lines.len() || norm_ws(&lines[pos]) != norm_ws(text) {
+                        return None;
+                    }
+                    out.push(lines[pos].clone());
+                    pos += 1;
+                }
+                '-' => {
+                    if pos >= lines.len() || norm_ws(&lines[pos]) != norm_ws(text) {
+                        return None;
+                    }
+                    pos += 1;
+                }
+                '+' => out.push(text.to_string()),
+                '\\' => {} // "\ No newline at end of file"
+                _ => return None,
+            }
+        }
+    }
+    out.extend_from_slice(&lines[pos..]);
+    Some(out)
+}
+
+fn legacy_diff(records: &[ToolUseResult]) -> (usize, usize) {
+    let mut file_original: Option<String> = None;
+    let mut file_final: Option<String> = None;
+    let mut chains: Vec<(String, String)> = Vec::new();
+
+    for result in records {
+        if let Some(content) = &result.content {
+            if file_original.is_none() {
+                file_original = Some(result.original_file.clone().unwrap_or_default());
+            }
+            file_final = Some(content.clone());
+            chains.clear();
+        } else if let (Some(old_str), Some(new_str)) = (&result.old_string, &result.new_string) {
+            let applied_to_write = if let Some(final_content) = file_final.as_mut() {
+                if final_content.contains(old_str.as_str()) {
+                    *final_content = final_content.replacen(old_str, new_str, 1);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if !applied_to_write {
+                let mut found = false;
+                for (_original, current) in chains.iter_mut() {
+                    if current.contains(old_str.as_str()) {
+                        *current = current.replacen(old_str, new_str, 1);
+                        found = true;
+                        break;
+                    }
+                }
+
+                if !found {
+                    // Absorb any existing chains whose current is inside this edit's old_string
+                    let mut resolved_old = old_str.clone();
+                    chains.retain(|(orig, cur)| {
+                        if resolved_old.contains(cur.as_str()) {
+                            resolved_old = resolved_old.replacen(cur, orig, 1);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    chains.push((resolved_old, new_str.clone()));
+                }
+            }
+        }
+    }
+
+    let mut added = 0;
+    let mut removed = 0;
+    for (original, final_content) in &chains {
+        let (a, r) = compute_diff(original, final_content);
+        added += a;
+        removed += r;
+    }
+    if let (Some(original), Some(final_content)) = (&file_original, &file_final) {
+        let (a, r) = compute_diff(original, final_content);
+        added += a;
+        removed += r;
+    }
     (added, removed)
 }
 
