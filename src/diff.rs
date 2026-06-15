@@ -199,6 +199,14 @@ fn split_lines(s: &str) -> Vec<String> {
     s.lines().map(str::to_string).collect()
 }
 
+/// A Write that created a new file: it has content, an empty structuredPatch
+/// (Claude Code emits no diff for a fresh file), and no non-empty originalFile.
+fn is_creation_write(r: &ToolUseResult) -> bool {
+    r.content.is_some()
+        && r.structured_patch.as_deref().is_some_and(|p| p.is_empty())
+        && r.original_file.as_deref().is_none_or(str::is_empty)
+}
+
 /// structuredPatch lines store tabs as two spaces; file snapshots keep real tabs.
 fn norm_ws(s: &str) -> Cow<'_, str> {
     if s.contains('\t') { Cow::Owned(s.replace('\t', "  ")) } else { Cow::Borrowed(s) }
@@ -233,6 +241,19 @@ fn patch_reconstruct(records: &[ToolUseResult]) -> Option<(Vec<String>, Vec<Stri
         (None, Some(j)) => (j + 1, split_lines(records[j].content.as_ref()?), j + 1),
         (None, None) => return None,
     };
+
+    // A Write that creates a new file carries content but an empty patch and an
+    // empty/missing originalFile — an empty patch over non-empty content is only
+    // consistent with the file not having existed before. The empty patch holds
+    // no diff to un-apply, so the backward walk would wrongly leave `before`
+    // equal to the created content. The true prior state is empty.
+    if records.first().is_some_and(is_creation_write) {
+        let mut after = anchor;
+        for r in &records[forward..] {
+            after = apply_patch(&after, r.structured_patch.as_ref()?, false)?;
+        }
+        return Some((Vec::new(), after));
+    }
 
     let mut before = anchor.clone();
     for r in records[..backward].iter().rev() {

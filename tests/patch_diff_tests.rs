@@ -368,6 +368,98 @@ fn test_empty_original_multi_edit_chain() {
 }
 
 #[test]
+fn test_write_new_file_empty_patch_counts_full_content() {
+    // Real-world bug: a Write that CREATES a new file carries an empty
+    // structuredPatch ([]) and an empty originalFile. Because the empty patch
+    // is still `Some`, the patch-reconstruct path runs and un-applying nothing
+    // makes before == after → 0 lines. The whole new file is lost.
+    // True diff: empty -> 3 lines = +3 -0.
+    let test_file = std::env::temp_dir().join(format!("patch_new_file_{}.txt", unique_id()));
+    let content = "alpha\nbeta\ngamma\n";
+    fs::write(&test_file, content).unwrap();
+    let fp = test_file.to_str().unwrap();
+
+    let transcript = create_test_transcript(&[write_entry(
+        "w1", None, fp,
+        Some(""),
+        content,
+        &[],
+    )]);
+
+    let (added, removed) = run_statusline(&transcript, fp);
+    assert_eq!((added, removed), (3, 0), "New-file Write with empty patch must count all content lines as additions");
+}
+
+#[test]
+fn test_write_new_file_missing_original_empty_patch() {
+    // Same creation case, but the originalFile key is absent entirely.
+    let test_file = std::env::temp_dir().join(format!("patch_new_file_no_orig_{}.txt", unique_id()));
+    let content = "one\ntwo\n";
+    fs::write(&test_file, content).unwrap();
+    let fp = test_file.to_str().unwrap();
+
+    let transcript = create_test_transcript(&[write_entry(
+        "w1", None, fp,
+        None,
+        content,
+        &[],
+    )]);
+
+    let (added, removed) = run_statusline(&transcript, fp);
+    assert_eq!((added, removed), (2, 0), "New-file Write with missing originalFile and empty patch must count content lines");
+}
+
+#[test]
+fn test_write_new_file_then_edit() {
+    // The bench transcript scenario: a new file is Written (empty patch, empty
+    // originalFile), then one line is edited. The creation must still count, so
+    // the net is empty -> final 3-line file = +3 -0, not just the edit's +1 -1.
+    let test_file = std::env::temp_dir().join(format!("patch_new_then_edit_{}.txt", unique_id()));
+    let final_content = "line_a\nv2\nline_c\n";
+    fs::write(&test_file, final_content).unwrap();
+    let fp = test_file.to_str().unwrap();
+
+    let transcript = create_test_transcript(&[
+        write_entry(
+            "w1", None, fp,
+            Some(""),
+            "line_a\nv1\nline_c\n",
+            &[],
+        ),
+        edit_entry(
+            "e1", Some("w1"), fp,
+            "v1\n", "v2\n",
+            Some("line_a\nv1\nline_c\n"),
+            &[hunk(1, 1, &[" line_a", "-v1", "+v2", " line_c"])],
+        ),
+    ]);
+
+    let (added, removed) = run_statusline(&transcript, fp);
+    assert_eq!((added, removed), (3, 0), "New-file Write followed by an edit must count the created file");
+}
+
+#[test]
+fn test_noop_write_empty_patch_is_zero() {
+    // Regression guard: a Write to an EXISTING file with no changes carries a
+    // non-empty originalFile and an empty patch. This is a no-op, not a
+    // creation, and must stay +0 -0.
+    let test_file = std::env::temp_dir().join(format!("patch_noop_write_{}.txt", unique_id()));
+    let content = "stays\nthe\nsame\n";
+    fs::write(&test_file, content).unwrap();
+    let fp = test_file.to_str().unwrap();
+
+    let transcript = create_test_transcript(&[write_entry(
+        "w1", None, fp,
+        Some(content),
+        content,
+        &[],
+    )]);
+
+    let (added, removed) = run_statusline(&transcript, fp);
+    assert_eq!((added, removed), (0, 0), "No-op Write over an existing file must count nothing");
+}
+
+#[test]
 fn test_multi_hunk_patch() {
     // A single record whose patch has two hunks at different offsets.
     // l1..l9 with l2 -> x2 and x9 inserted before l9 = +2 -1.
