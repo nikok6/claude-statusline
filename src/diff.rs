@@ -1,16 +1,19 @@
 use crate::cache;
+use crate::fsutil;
 use serde::Deserialize;
 use similar::{ChangeTag, TextDiff};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
 struct LineEntry {
     uuid: Option<String>,
     #[serde(rename = "parentUuid")]
     parent_uuid: Option<String>,
+    timestamp: Option<String>,
     // Error results are plain strings, so parse lazily from a Value.
     #[serde(rename = "toolUseResult")]
     tool_use_result: Option<serde_json::Value>,
@@ -40,11 +43,15 @@ struct Hunk {
     lines: Vec<String>,
 }
 
-/// Files in per-file edit order, restricted to the active conversation branch.
-fn parse_transcript(transcript_path: &str) -> (Vec<String>, HashMap<String, Vec<ToolUseResult>>) {
+/// A surviving file-edit record: (file path, timestamp, tool result).
+type Record = (String, Option<String>, ToolUseResult);
+
+/// Edit records from a single transcript, in file order, restricted to the
+/// active conversation branch.
+fn parse_records(transcript_path: &str) -> Vec<Record> {
     let file = match File::open(transcript_path) {
         Ok(f) => f,
-        Err(_) => return (Vec::new(), HashMap::new()),
+        Err(_) => return Vec::new(),
     };
 
     let exclude_dirs: Vec<String> = std::env::var("HOME")
@@ -54,7 +61,7 @@ fn parse_transcript(transcript_path: &str) -> (Vec<String>, HashMap<String, Vec<
     let reader = BufReader::new(file);
     let mut parents: HashMap<String, Option<String>> = HashMap::new();
     let mut last_uuid: Option<String> = None;
-    let mut records: Vec<(String, Option<String>, ToolUseResult)> = Vec::new();
+    let mut records: Vec<(String, Option<String>, Option<String>, ToolUseResult)> = Vec::new();
 
     for line in reader.lines().map_while(Result::ok) {
         if !line.contains("\"uuid\"") && !line.contains("\"toolUseResult\"") {
@@ -72,7 +79,7 @@ fn parse_transcript(transcript_path: &str) -> (Vec<String>, HashMap<String, Vec<
                     if exclude_dirs.iter().any(|d| file_path.starts_with(d)) {
                         continue;
                     }
-                    records.push((file_path, entry.uuid.clone(), result));
+                    records.push((file_path, entry.uuid.clone(), entry.timestamp.clone(), result));
                 }
     }
 
@@ -91,19 +98,66 @@ fn parse_transcript(transcript_path: &str) -> (Vec<String>, HashMap<String, Vec<
     }
 
     let mut memo: HashMap<String, bool> = HashMap::new();
-    let mut order: Vec<String> = Vec::new();
-    let mut by_file: HashMap<String, Vec<ToolUseResult>> = HashMap::new();
-    for (file_path, uuid, result) in records {
+    let mut surviving: Vec<Record> = Vec::new();
+    for (file_path, uuid, ts, result) in records {
         if let Some(u) = &uuid
             && is_abandoned(u, &parents, &active, &mut memo) {
                 continue;
             }
+        surviving.push((file_path, ts, result));
+    }
+
+    surviving
+}
+
+/// Subagent transcripts for a session live at `<dir>/<stem>/subagents/*.jsonl`
+/// alongside the main `<dir>/<stem>.jsonl`. Their edits target real files and
+/// belong in the session's diff, so they're folded in with the main records.
+fn subagent_transcripts(transcript_path: &str) -> Vec<PathBuf> {
+    let p = Path::new(transcript_path);
+    let (Some(stem), Some(parent)) = (p.file_stem().and_then(|s| s.to_str()), p.parent()) else {
+        return Vec::new();
+    };
+    fsutil::jsonl_files(&parent.join(stem).join(fsutil::SUBAGENTS_DIR))
+}
+
+/// Combined byte size of the subagent transcripts — the cache freshness signal
+/// (a new subagent file or a grown one changes this; see `cache::load`).
+fn subagent_signature(paths: &[PathBuf]) -> u64 {
+    paths.iter().map(|p| fs::metadata(p).map(|m| m.len()).unwrap_or(0)).sum()
+}
+
+/// Sort key for ordering records across the main and subagent transcripts.
+/// Second precision is enough and is lexically ordered for RFC3339; finer
+/// ordering within a second falls back to the stable sort's original order.
+fn ts_key(ts: &Option<String>) -> &str {
+    ts.as_deref().map(|s| s.get(0..19).unwrap_or(s)).unwrap_or("")
+}
+
+/// Merges the main transcript's records with every subagent transcript's,
+/// ordered chronologically so a file edited by both reconstructs correctly.
+fn collect_records(transcript_path: &str, subagents: &[PathBuf]) -> (Vec<String>, HashMap<String, Vec<ToolUseResult>>) {
+    let mut records = parse_records(transcript_path);
+    if !subagents.is_empty() {
+        for sub in subagents {
+            records.extend(parse_records(&sub.to_string_lossy()));
+        }
+        // Merge the transcripts chronologically. Stable, so records with equal
+        // (or missing) timestamps keep their original per-file order. Skipped
+        // entirely when there are no subagents: the single-transcript path then
+        // keeps its append-only file order, the reliable signal it always used,
+        // without depending on every record carrying a timestamp.
+        records.sort_by(|a, b| ts_key(&a.1).cmp(ts_key(&b.1)));
+    }
+
+    let mut order: Vec<String> = Vec::new();
+    let mut by_file: HashMap<String, Vec<ToolUseResult>> = HashMap::new();
+    for (file_path, _ts, result) in records {
         if !by_file.contains_key(&file_path) {
             order.push(file_path.clone());
         }
         by_file.entry(file_path).or_default().push(result);
     }
-
     (order, by_file)
 }
 
@@ -146,14 +200,16 @@ fn is_abandoned(
 
 pub fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
     let cache_path = cache::get_cache_path(transcript_path);
+    let subagents = subagent_transcripts(transcript_path);
+    let subagent_sig = subagent_signature(&subagents);
 
     // Try cache first
-    if let Some(c) = cache::load(&cache_path, transcript_path) {
+    if let Some(c) = cache::load(&cache_path, transcript_path, subagent_sig) {
         return (c.added, c.removed);
     }
 
     // Cache miss: parse and compute
-    let (order, mut by_file) = parse_transcript(transcript_path);
+    let (order, mut by_file) = collect_records(transcript_path, &subagents);
 
     let mut added = 0;
     let mut removed = 0;
@@ -177,6 +233,7 @@ pub fn calculate_net_diff(transcript_path: &str) -> (usize, usize) {
         added,
         removed,
         files,
+        subagent_sig,
         claude_pid: existing_pid,
     });
 

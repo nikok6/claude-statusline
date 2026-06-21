@@ -1,5 +1,6 @@
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -98,6 +99,186 @@ fn run_statusline(transcript_path: &str, test_file: &str) -> (usize, usize) {
 
     let _ = fs::remove_file(test_file);
     (added, removed)
+}
+
+/// Like `edit_entry` but stamped with a timestamp, used to verify that records
+/// from the main and subagent transcripts are merged in chronological order.
+fn edit_entry_ts(file_path: &str, old_str: &str, new_str: &str, ts: &str) -> String {
+    serde_json::json!({
+        "timestamp": ts,
+        "toolUseResult": {
+            "filePath": file_path,
+            "oldString": old_str,
+            "newString": new_str
+        }
+    })
+    .to_string()
+}
+
+/// Writes a subagent transcript at `<dir>/<stem>/subagents/<name>.jsonl`,
+/// derived from the main transcript path the way the binary discovers them.
+fn write_subagent_transcript(main_transcript: &str, name: &str, entries: &[String]) -> PathBuf {
+    let p = Path::new(main_transcript);
+    let stem = p.file_stem().unwrap().to_str().unwrap();
+    let dir = p.parent().unwrap().join(stem).join("subagents");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{name}.jsonl"));
+    let mut f = File::create(&path).unwrap();
+    for e in entries {
+        writeln!(f, "{e}").unwrap();
+    }
+    path
+}
+
+/// Runs the binary for `transcript_path` and returns the parsed `+a -r`,
+/// WITHOUT deleting anything (so a test can run twice to exercise the cache).
+fn run_diff(transcript_path: &str) -> (usize, usize) {
+    let input = format!(
+        r#"{{"cwd":"/tmp","transcript_path":"{}","model":{{"display_name":"test"}}}}"#,
+        transcript_path
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_statusline"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(input.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to run statusline");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stripped: String = stdout
+        .chars()
+        .fold((String::new(), false), |(mut s, in_escape), c| {
+            if c == '\x1b' {
+                (s, true)
+            } else if in_escape {
+                (s, c != 'm')
+            } else {
+                s.push(c);
+                (s, false)
+            }
+        })
+        .0;
+    let mut added = 0;
+    let mut removed = 0;
+    for (i, c) in stripped.chars().enumerate() {
+        if c == '+' {
+            let num: String = stripped[i + 1..].chars().take_while(|c| c.is_numeric()).collect();
+            if let Ok(n) = num.parse() {
+                added = n;
+            }
+        } else if c == '-' {
+            let num: String = stripped[i + 1..].chars().take_while(|c| c.is_numeric()).collect();
+            if !num.is_empty()
+                && let Ok(n) = num.parse() {
+                    removed = n;
+                }
+        }
+    }
+    (added, removed)
+}
+
+#[test]
+fn test_subagent_edits_in_separate_file_are_counted() {
+    // A subagent writes a file the main agent never touched. Its edit lives in
+    // a sibling subagents/*.jsonl and must still count toward the session diff.
+    let main_file = std::env::temp_dir().join(format!("test_sub_main_{}.txt", unique_id()));
+    let sub_file = std::env::temp_dir().join(format!("test_sub_agent_{}.txt", unique_id()));
+    fs::write(&main_file, "a\nb\nc\n").unwrap();
+    fs::write(&sub_file, "x\ny\n").unwrap();
+
+    let transcript = create_test_transcript(&[
+        &write_entry(main_file.to_str().unwrap(), "", "a\nb\nc\n"),
+    ]);
+    write_subagent_transcript(
+        &transcript,
+        "agent-1",
+        &[write_entry(sub_file.to_str().unwrap(), "", "x\ny\n")],
+    );
+
+    let (added, removed) = run_diff(&transcript);
+    let _ = fs::remove_file(&main_file);
+    let _ = fs::remove_file(&sub_file);
+    // main +3, subagent +2.
+    assert_eq!((added, removed), (5, 0), "subagent file edits should be counted");
+}
+
+#[test]
+fn test_subagent_edit_to_same_file_as_main_combines() {
+    // Main writes the file; a subagent then edits one of its lines. The records
+    // merge into one per-file history and reconstruct as a single change.
+    let file = std::env::temp_dir().join(format!("test_sub_same_{}.txt", unique_id()));
+    fs::write(&file, "a\nx\nc\n").unwrap();
+
+    let transcript = create_test_transcript(&[
+        &write_entry(file.to_str().unwrap(), "", "a\nb\nc\n"),
+    ]);
+    write_subagent_transcript(
+        &transcript,
+        "agent-1",
+        &[edit_entry(file.to_str().unwrap(), "b\n", "x\n")],
+    );
+
+    let (added, removed) = run_diff(&transcript);
+    let _ = fs::remove_file(&file);
+    // Empty -> "a\nx\nc\n" after the subagent's edit applies to the written content.
+    assert_eq!((added, removed), (3, 0), "main write + subagent edit combine to +3");
+}
+
+#[test]
+fn test_main_and_subagent_records_ordered_by_timestamp() {
+    // The chronologically EARLIER edit lives in the subagent transcript and the
+    // LATER one in the main transcript, so file-append order alone is wrong.
+    // Only timestamp ordering chains them (line3 -> A -> B = +1 -1); a wrong
+    // order would orphan the chains and double-count to +2 -2.
+    let file = std::env::temp_dir().join(format!("test_sub_order_{}.txt", unique_id()));
+    fs::write(&file, "line1\nline2\nB\nline4\nline5\n").unwrap();
+
+    // Main transcript holds the later edit (A -> B at T2).
+    let transcript = create_test_transcript(&[
+        &edit_entry_ts(file.to_str().unwrap(), "A\n", "B\n", "2099-01-01T10:00:02Z"),
+    ]);
+    // Subagent holds the earlier edit (line3 -> A at T1).
+    write_subagent_transcript(
+        &transcript,
+        "agent-1",
+        &[edit_entry_ts(file.to_str().unwrap(), "line3\n", "A\n", "2099-01-01T10:00:01Z")],
+    );
+
+    let (added, removed) = run_diff(&transcript);
+    let _ = fs::remove_file(&file);
+    assert_eq!((added, removed), (1, 1), "records must chain in timestamp order");
+}
+
+#[test]
+fn test_new_subagent_transcript_invalidates_cache() {
+    // First render caches with no subagents. A subagent transcript then appears;
+    // its larger combined size must invalidate the cache so the count updates.
+    let main_file = std::env::temp_dir().join(format!("test_sub_cache_main_{}.txt", unique_id()));
+    let sub_file = std::env::temp_dir().join(format!("test_sub_cache_agent_{}.txt", unique_id()));
+    fs::write(&main_file, "a\nb\nc\n").unwrap();
+
+    let transcript = create_test_transcript(&[
+        &write_entry(main_file.to_str().unwrap(), "", "a\nb\nc\n"),
+    ]);
+
+    // First run: only the main write -> +3, cached with subagent_sig 0.
+    assert_eq!(run_diff(&transcript), (3, 0));
+
+    // A subagent appears, writing a second file.
+    fs::write(&sub_file, "x\ny\n").unwrap();
+    write_subagent_transcript(
+        &transcript,
+        "agent-1",
+        &[write_entry(sub_file.to_str().unwrap(), "", "x\ny\n")],
+    );
+
+    // The cache must notice the new subagent transcript and recompute -> +5.
+    let (added, removed) = run_diff(&transcript);
+    let _ = fs::remove_file(&main_file);
+    let _ = fs::remove_file(&sub_file);
+    assert_eq!((added, removed), (5, 0), "new subagent transcript should bust the cache");
 }
 
 #[test]

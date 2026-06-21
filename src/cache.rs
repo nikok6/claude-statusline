@@ -8,6 +8,11 @@ pub struct Cache {
     pub added: usize,
     pub removed: usize,
     pub files: Vec<String>,
+    // Combined size of the session's subagent transcripts at the time these
+    // counts were computed. The main `byte_offset` only tracks the main
+    // transcript, so subagent edits would otherwise leave a stale cache.
+    #[serde(default)]
+    pub subagent_sig: u64,
     #[serde(default)]
     pub claude_pid: Option<u32>,
 }
@@ -20,7 +25,7 @@ pub fn get_cache_path(transcript_path: &str) -> String {
     format!("/tmp/statusline_cache_{}.json", name)
 }
 
-pub fn load(cache_path: &str, transcript_path: &str) -> Option<Cache> {
+pub fn load(cache_path: &str, transcript_path: &str, subagent_sig: u64) -> Option<Cache> {
     let content = fs::read_to_string(cache_path).ok()?;
     let cache: Cache = serde_json::from_str(&content).ok()?;
 
@@ -29,6 +34,12 @@ pub fn load(cache_path: &str, transcript_path: &str) -> Option<Cache> {
     }
 
     if has_new_file_ops(transcript_path, cache.byte_offset) {
+        return None;
+    }
+
+    // A subagent transcript changed size (a new one appeared or an existing one
+    // grew): its edits aren't reflected in the cached counts, so recompute.
+    if cache.subagent_sig != subagent_sig {
         return None;
     }
 

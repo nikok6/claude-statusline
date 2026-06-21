@@ -358,11 +358,20 @@ fn list_transcripts() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(&root) else { return out };
     for e in entries.flatten() {
-        let Ok(sub) = fs::read_dir(e.path()) else { continue };
+        let project = e.path();
+        let Ok(sub) = fs::read_dir(&project) else { continue };
         for f in sub.flatten() {
             let p = f.path();
             if p.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                 out.push(p);
+            } else if p.is_dir() {
+                // Subagent transcripts live one level deeper, under
+                // `<session>/subagents/*.jsonl`. Their assistant turns carry
+                // real (billed) usage that would otherwise go uncounted. They
+                // share the parent's sessionId, so they fold into the same
+                // session bucket; the usage entries are unique to this file,
+                // so scanning it adds no double counting.
+                out.extend(crate::fsutil::jsonl_files(&p.join(crate::fsutil::SUBAGENTS_DIR)));
             }
         }
     }

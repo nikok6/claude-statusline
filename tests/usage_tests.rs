@@ -77,6 +77,20 @@ fn write_transcript(home: &Path, name: &str, lines: &[String]) -> PathBuf {
     path
 }
 
+/// Writes JSONL into a subagent transcript at
+/// `projects/proj/<session>/subagents/<name>.jsonl` — the nested location
+/// Claude Code uses for subagent (sidechain) conversations.
+fn write_subagent_transcript(home: &Path, session: &str, name: &str, lines: &[String]) -> PathBuf {
+    let dir = home.join(format!(".claude/projects/proj/{session}/subagents"));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{name}.jsonl"));
+    let mut f = File::create(&path).unwrap();
+    for l in lines {
+        writeln!(f, "{l}").unwrap();
+    }
+    path
+}
+
 fn append_lines(path: &Path, lines: &[String]) {
     let mut f = fs::OpenOptions::new().append(true).open(path).unwrap();
     for l in lines {
@@ -215,6 +229,39 @@ fn aggregates_across_days_models_and_sessions() {
     assert_eq!(u(&sess["sessions"]["s2"], "input_tokens"), 1_000_000);
     assert_eq!(sess["sessions"]["s1"]["first_seen"].as_str(), Some("2099-03-15T10:00:00Z"));
     assert_eq!(sess["sessions"]["s1"]["last_seen"].as_str(), Some("2099-03-20T10:00:00Z"));
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn subagent_transcript_usage_folds_into_parent_session() {
+    let home = enabled("UTC");
+    // Main session line under projects/proj/<session>.jsonl ...
+    let main = assistant_line(
+        "2099-03-15T10:00:00Z", "sess-main", "/work/alpha", "claude-opus-4-7", 1_000_000, 0, 0, 0, 0,
+    );
+    write_transcript(&home, "sess-main", &[main]);
+    // ... and a subagent line nested under projects/proj/sess-main/subagents/.
+    // It shares the parent sessionId; its usage is billed but lives only here.
+    let sub = assistant_line(
+        "2099-03-15T10:05:00Z", "sess-main", "/work/alpha", "claude-opus-4-7", 2_000_000, 0, 0, 0, 0,
+    );
+    write_subagent_transcript(&home, "sess-main", "agent-abc", &[sub]);
+    run(&home);
+
+    let s = summary(&home);
+    // Both the main (1M) and the subagent (2M) tokens are counted.
+    assert_eq!(u(&s["totals"], "input_tokens"), 3_000_000);
+    approx(cost(&s["totals"]), 15.0); // 1M + 2M input at opus-4-7 $5/M
+    approx(cost(bucket(&s, "daily", "2099-03-15")), 15.0);
+
+    // They share one sessionId, so they fold into a single session bucket
+    // spanning both timestamps.
+    let sess = sessions(&home);
+    let a = &sess["sessions"]["sess-main"];
+    assert_eq!(u(a, "input_tokens"), 3_000_000);
+    assert_eq!(a["first_seen"].as_str(), Some("2099-03-15T10:00:00Z"));
+    assert_eq!(a["last_seen"].as_str(), Some("2099-03-15T10:05:00Z"));
 
     fs::remove_dir_all(&home).ok();
 }

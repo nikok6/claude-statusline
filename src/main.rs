@@ -2,6 +2,7 @@ mod cache;
 mod colors;
 mod config;
 mod diff;
+mod fsutil;
 mod git;
 mod process;
 mod tokens;
