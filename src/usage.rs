@@ -199,7 +199,12 @@ fn price_for(model: &str) -> Pricing {
     let m = |id: &str| is_model(model, id);
     if m("claude-fable-5") || m("claude-mythos-5") {
         Pricing { input: 10.0, output: 50.0, cache_5m: 12.50, cache_1h: 20.0, cache_read: 1.0 }
-    } else if m("claude-opus-4-5") || m("claude-opus-4-6") || m("claude-opus-4-7") || m("claude-opus-4-8") {
+    } else if m("claude-opus-5")
+        || m("claude-opus-4-5")
+        || m("claude-opus-4-6")
+        || m("claude-opus-4-7")
+        || m("claude-opus-4-8")
+    {
         Pricing { input: 5.0, output: 25.0, cache_5m: 6.25, cache_1h: 10.0, cache_read: 0.50 }
     } else if m("claude-opus-4") || m("claude-opus-4-1") {
         Pricing { input: 15.0, output: 75.0, cache_5m: 18.75, cache_1h: 30.0, cache_read: 1.50 }
