@@ -526,6 +526,45 @@ fn unknown_version_does_not_inherit_family_pricing() {
     fs::remove_dir_all(&home).ok();
 }
 
+#[test]
+fn fable_5_1_uses_quarter_cache_read_rate() {
+    let home = enabled("UTC");
+    // 1M tokens in each category. Fable/Mythos 5.1 share 5's $10/$50 and
+    // cache-write rates, but cache reads are $0.25 (0.025x) not $1 (0.1x).
+    // 5.1: 10 + 50 + 12.50 + 20 + 0.25 = 92.75
+    // 5:   10 + 50 + 12.50 + 20 + 1.00 = 93.50
+    let lines = vec![
+        assistant_line(
+            "2099-03-15T10:00:00Z", "s1", "/w",
+            "claude-fable-5-1", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+        assistant_line(
+            "2099-03-15T10:01:00Z", "s1", "/w",
+            "claude-mythos-5-1", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+        assistant_line(
+            "2099-03-15T10:02:00Z", "s1", "/w",
+            "claude-fable-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+        // Date snapshot of 5.1 must not fall through to 5's $1 cache-read rate.
+        assistant_line(
+            "2099-03-15T10:03:00Z", "s1", "/w",
+            "claude-fable-5-1-20260901", 0, 0, 0, 0, 1_000_000,
+        ),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5-1"]), 92.75);
+    approx(cost(&s["totals"]["by_model"]["claude-mythos-5-1"]), 92.75);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5"]), 93.50);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5-1-20260901"]), 0.25);
+    approx(cost(&s["totals"]), 92.75 + 92.75 + 93.50 + 0.25);
+
+    fs::remove_dir_all(&home).ok();
+}
+
 /// An assistant line whose usage block has a creation total but a missing or
 /// partial 5m/1h breakdown, exercising the bill-remainder-at-5m rule.
 fn assistant_line_with_breakdown(

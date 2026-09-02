@@ -197,7 +197,12 @@ fn price_for(model: &str) -> Pricing {
     // Each version is listed explicitly — see is_model. Opus 4.5+ uses the new
     // lower pricing; Opus 4.0/4.1 keep the legacy rate.
     let m = |id: &str| is_model(model, id);
-    if m("claude-fable-5") || m("claude-mythos-5") {
+    // Fable/Mythos 5.1: same $10/$50 as 5, but cache reads at 0.025x input
+    // ($0.25) instead of the usual 0.1x ($1). Listed before the 5 ids so a
+    // looser matcher cannot silently bill 5.1 at the 5 cache-read rate.
+    if m("claude-fable-5-1") || m("claude-mythos-5-1") {
+        Pricing { input: 10.0, output: 50.0, cache_5m: 12.50, cache_1h: 20.0, cache_read: 0.25 }
+    } else if m("claude-fable-5") || m("claude-mythos-5") {
         Pricing { input: 10.0, output: 50.0, cache_5m: 12.50, cache_1h: 20.0, cache_read: 1.0 }
     } else if m("claude-opus-5")
         || m("claude-opus-4-5")
