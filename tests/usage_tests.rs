@@ -565,6 +565,31 @@ fn fable_5_1_uses_quarter_cache_read_rate() {
     fs::remove_dir_all(&home).ok();
 }
 
+#[test]
+fn sonnet_5_5_shares_sonnet_5_rates() {
+    let home = enabled("UTC");
+    // 1M tokens in each category: 2 + 10 + 2.50 + 4 + 0.20 = 18.70
+    let lines = vec![
+        assistant_line(
+            "2099-03-15T10:00:00Z", "s1", "/w",
+            "claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+        assistant_line(
+            "2099-03-15T10:01:00Z", "s1", "/w",
+            "claude-sonnet-5-5[1m]", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-sonnet-5-5"]), 18.70);
+    approx(cost(&s["totals"]["by_model"]["claude-sonnet-5-5[1m]"]), 18.70);
+    assert!(s["totals"].get("unpriced_tokens").is_none());
+
+    fs::remove_dir_all(&home).ok();
+}
+
 /// An assistant line whose usage block has a creation total but a missing or
 /// partial 5m/1h breakdown, exercising the bill-remainder-at-5m rule.
 fn assistant_line_with_breakdown(

@@ -218,7 +218,7 @@ fn price_for(model: &str) -> Pricing {
         Pricing { input: 5.0, output: 25.0, cache_5m: 6.25, cache_1h: 10.0, cache_read: 0.50 }
     } else if m("claude-opus-4") || m("claude-opus-4-1") {
         Pricing { input: 15.0, output: 75.0, cache_5m: 18.75, cache_1h: 30.0, cache_read: 1.50 }
-    } else if m("claude-sonnet-5") {
+    } else if m("claude-sonnet-5-5") || m("claude-sonnet-5") {
         Pricing { input: 2.0, output: 10.0, cache_5m: 2.50, cache_1h: 4.0, cache_read: 0.20 }
     } else if m("claude-sonnet-4") || m("claude-sonnet-4-5") || m("claude-sonnet-4-6") {
         Pricing { input: 3.0, output: 15.0, cache_5m: 3.75, cache_1h: 6.0, cache_read: 0.30 }
