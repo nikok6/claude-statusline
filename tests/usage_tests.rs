@@ -566,9 +566,11 @@ fn fable_5_1_uses_quarter_cache_read_rate() {
 }
 
 #[test]
-fn sonnet_5_5_shares_sonnet_5_rates() {
+fn sonnet_5_5_uses_half_sonnet_5_cache_read_rate() {
     let home = enabled("UTC");
-    // 1M tokens in each category: 2 + 10 + 2.50 + 4 + 0.20 = 18.70
+    // 1M per category; only cache reads differ.
+    // 5.5: 2 + 10 + 2.50 + 4 + 0.10 = 18.60
+    // 5:   2 + 10 + 2.50 + 4 + 0.20 = 18.70
     let lines = vec![
         assistant_line(
             "2099-03-15T10:00:00Z", "s1", "/w",
@@ -578,14 +580,232 @@ fn sonnet_5_5_shares_sonnet_5_rates() {
             "2099-03-15T10:01:00Z", "s1", "/w",
             "claude-sonnet-5-5[1m]", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
         ),
+        assistant_line(
+            "2099-03-15T10:02:00Z", "s1", "/w",
+            "claude-sonnet-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
     ];
     write_transcript(&home, "t1", &lines);
     run(&home);
 
     let s = summary(&home);
-    approx(cost(&s["totals"]["by_model"]["claude-sonnet-5-5"]), 18.70);
-    approx(cost(&s["totals"]["by_model"]["claude-sonnet-5-5[1m]"]), 18.70);
+    approx(cost(&s["totals"]["by_model"]["claude-sonnet-5-5"]), 18.60);
+    approx(cost(&s["totals"]["by_model"]["claude-sonnet-5-5[1m]"]), 18.60);
+    approx(cost(&s["totals"]["by_model"]["claude-sonnet-5"]), 18.70);
     assert!(s["totals"].get("unpriced_tokens").is_none());
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_short_prompt_tier() {
+    let home = enabled("UTC");
+    // 10k per category: 40k prompt, short tier.
+    // 0.001 + 0.005 + 0.00125 + 0.002 + 0.0001 = 0.00935
+    let lines = vec![
+        assistant_line(
+            "2099-03-15T10:00:00Z", "s1", "/w",
+            "claude-haiku-5-5", 10_000, 10_000, 10_000, 10_000, 10_000,
+        ),
+        // [1m] tag and date snapshot match too.
+        assistant_line(
+            "2099-03-15T10:01:00Z", "s1", "/w",
+            "claude-haiku-5-5[1m]", 10_000, 10_000, 10_000, 10_000, 10_000,
+        ),
+        assistant_line(
+            "2099-03-15T10:02:00Z", "s1", "/w",
+            "claude-haiku-5-5-20261007", 10_000, 10_000, 10_000, 10_000, 10_000,
+        ),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-haiku-5-5"]), 0.00935);
+    approx(cost(&s["totals"]["by_model"]["claude-haiku-5-5[1m]"]), 0.00935);
+    approx(cost(&s["totals"]["by_model"]["claude-haiku-5-5-20261007"]), 0.00935);
+    assert!(s["totals"].get("unpriced_tokens").is_none());
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_long_prompt_tier_applies_to_whole_request() {
+    let home = enabled("UTC");
+    // 1M per category: 4M prompt, long tier incl. output.
+    // 0.50 + 2.50 + 0.625 + 1.0 + 0.05 = 4.675
+    let lines = vec![
+        assistant_line(
+            "2099-03-15T10:00:00Z", "s1", "/w",
+            "claude-haiku-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+        assistant_line(
+            "2099-03-15T10:01:00Z", "s1", "/w",
+            "claude-haiku-5-5[1m]", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-haiku-5-5"]), 4.675);
+    approx(cost(&s["totals"]["by_model"]["claude-haiku-5-5[1m]"]), 4.675);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_tier_boundary_counts_cache_tokens() {
+    let home = enabled("UTC");
+    // 40k + 20k + 20k + 20k = 100,000 prompt: short.
+    //   0.004 + 0.005 + 0.0025 + 0.004 + 0.0002 = 0.0157
+    // One more cache-read token: long.
+    //   0.02 + 0.025 + 0.0125 + 0.02 + 20_001 * 0.05 / 1M = 0.07850005
+    let lines = vec![
+        assistant_line(
+            "2099-03-15T10:00:00Z", "s1", "/w",
+            "claude-haiku-5-5", 40_000, 10_000, 20_000, 20_000, 20_000,
+        ),
+        assistant_line(
+            "2099-03-15T10:01:00Z", "s2", "/w",
+            "claude-haiku-5-5", 40_000, 10_000, 20_000, 20_000, 20_001,
+        ),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let sess = sessions(&home);
+    approx(cost(&sess["sessions"]["s1"]), 0.0157);
+    approx(cost(&sess["sessions"]["s2"]), 0.07850005);
+    approx(cost(&summary(&home)["totals"]), 0.0157 + 0.07850005);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_tier_is_per_message_not_per_session() {
+    let home = enabled("UTC");
+    // Tier is per message: two 60k prompts stay short (0.012), one 120k goes long (0.06).
+    let lines = vec![
+        assistant_line("2099-03-15T10:00:00Z", "s1", "/w", "claude-haiku-5-5", 60_000, 0, 0, 0, 0),
+        assistant_line("2099-03-15T10:01:00Z", "s1", "/w", "claude-haiku-5-5", 60_000, 0, 0, 0, 0),
+        assistant_line("2099-03-15T10:02:00Z", "s2", "/w", "claude-haiku-5-5", 120_000, 0, 0, 0, 0),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let sess = sessions(&home);
+    approx(cost(&sess["sessions"]["s1"]), 0.012);
+    approx(cost(&sess["sessions"]["s2"]), 0.06);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_history_folded_at_zero_reprices_at_short_tier() {
+    let home = enabled("UTC");
+    // $0 history reprices at the short tier despite totals over 100k.
+    let line = assistant_line(
+        "2099-03-15T10:00:00Z", "s1", "/w",
+        "claude-unknown-9", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+    );
+    write_transcript(&home, "t1", &[line]);
+    run(&home);
+    approx(cost(&summary(&home)["totals"]), 0.0);
+
+    let cache_file = home.join(".claude/usage/usage-cache.json");
+    let cache = fs::read_to_string(&cache_file).unwrap();
+    fs::write(&cache_file, cache.replace("claude-unknown-9", "claude-haiku-5-5")).unwrap();
+    run(&home);
+
+    // Short tier: 0.10 + 0.50 + 0.125 + 0.20 + 0.01 = 0.935
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-haiku-5-5"]), 0.935);
+    assert!(s["totals"].get("unpriced_tokens").is_none());
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_history_reprices_when_new_lines_land_in_same_run() {
+    let home = enabled("UTC");
+    // $0 history under an unknown model.
+    let line = assistant_line(
+        "2099-03-15T10:00:00Z", "s1", "/w",
+        "claude-unknown-9", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+    );
+    let path = write_transcript(&home, "t1", &[line]);
+    run(&home);
+
+    // Model now priced, plus a new line in the same run.
+    let cache_file = home.join(".claude/usage/usage-cache.json");
+    let cache = fs::read_to_string(&cache_file).unwrap();
+    fs::write(&cache_file, cache.replace("claude-unknown-9", "claude-haiku-5-5")).unwrap();
+    append_lines(&path, &[assistant_line(
+        "2099-03-15T10:05:00Z", "s1", "/w", "claude-haiku-5-5", 10_000, 0, 0, 0, 0,
+    )]);
+    run(&home);
+
+    // 0.935 repriced history + 10k input * $0.10 = 0.936
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-haiku-5-5"]), 0.936);
+    approx(cost(&s["totals"]), 0.936);
+    assert!(s["totals"].get("unpriced_tokens").is_none());
+    approx(cost(bucket(&s, "daily", "2099-03-15")), 0.936);
+    approx(cost(bucket(&s, "monthly", "2099-03")), 0.936);
+    approx(cost(&sessions(&home)["sessions"]["s1"]), 0.936);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_tier_uses_billed_cache_creation_when_total_missing() {
+    let home = enabled("UTC");
+    // No creation total, 150k 5m breakdown: 150,010 prompt, long tier.
+    //   10 * 0.50 / 1M + 150k * 0.625 / 1M = 0.093755
+    let line = json!({
+        "type": "assistant", "timestamp": "2099-03-15T10:00:00Z", "sessionId": "s1", "cwd": "/w",
+        "message": { "model": "claude-haiku-5-5", "usage": {
+            "input_tokens": 10, "output_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_creation": { "ephemeral_5m_input_tokens": 150_000, "ephemeral_1h_input_tokens": 0 }
+        }}
+    })
+    .to_string();
+    write_transcript(&home, "t1", &[line]);
+    run(&home);
+
+    approx(cost(&summary(&home)["totals"]["by_model"]["claude-haiku-5-5"]), 0.093755);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn haiku_5_5_big_output_small_prompt_stays_short() {
+    let home = enabled("UTC");
+    // Output isn't prompt: short tier.
+    //   1k * 0.10 / 1M + 1M * 0.50 / 1M = 0.5001
+    let line = assistant_line(
+        "2099-03-15T10:00:00Z", "s1", "/w", "claude-haiku-5-5", 1_000, 1_000_000, 0, 0, 0,
+    );
+    write_transcript(&home, "t1", &[line]);
+    run(&home);
+
+    approx(cost(&summary(&home)["totals"]["by_model"]["claude-haiku-5-5"]), 0.5001);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn dated_sonnet_5_5_uses_sonnet_5_5_cache_read_rate() {
+    let home = enabled("UTC");
+    // Dated 5.5 id gets 5.5's $0.10 cache reads.
+    let line = assistant_line(
+        "2099-03-15T10:00:00Z", "s1", "/w", "claude-sonnet-5-5-20261007", 0, 0, 0, 0, 1_000_000,
+    );
+    write_transcript(&home, "t1", &[line]);
+    run(&home);
+
+    approx(cost(&summary(&home)["totals"]["by_model"]["claude-sonnet-5-5-20261007"]), 0.10);
 
     fs::remove_dir_all(&home).ok();
 }

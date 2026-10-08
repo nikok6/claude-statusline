@@ -192,6 +192,17 @@ fn is_model(model: &str, id: &str) -> bool {
         || (rest.starts_with("-2") && rest.len() >= 5 && rest[1..].bytes().all(|b| b.is_ascii_digit()))
 }
 
+const HAIKU_5_5: &str = "claude-haiku-5-5";
+
+/// Haiku 5.5 requests whose prompt (input + cache write + cache read) exceeds
+/// this bill entirely at HAIKU_5_5_LONG.
+const HAIKU_5_5_LONG_PROMPT_TOKENS: u64 = 100_000;
+
+const HAIKU_5_5_SHORT: Pricing =
+    Pricing { input: 0.10, output: 0.50, cache_5m: 0.125, cache_1h: 0.20, cache_read: 0.01 };
+const HAIKU_5_5_LONG: Pricing =
+    Pricing { input: 0.50, output: 2.50, cache_5m: 0.625, cache_1h: 1.0, cache_read: 0.05 };
+
 fn price_for(model: &str) -> Pricing {
     // Source: https://platform.claude.com/docs/en/about-claude/pricing
     // Each version is listed explicitly — see is_model. Opus 4.5+ uses the new
@@ -218,16 +229,31 @@ fn price_for(model: &str) -> Pricing {
         Pricing { input: 5.0, output: 25.0, cache_5m: 6.25, cache_1h: 10.0, cache_read: 0.50 }
     } else if m("claude-opus-4") || m("claude-opus-4-1") {
         Pricing { input: 15.0, output: 75.0, cache_5m: 18.75, cache_1h: 30.0, cache_read: 1.50 }
-    } else if m("claude-sonnet-5-5") || m("claude-sonnet-5") {
+    // Sonnet 5.5: cache reads at 0.05x input; listed before sonnet-5.
+    } else if m("claude-sonnet-5-5") {
+        Pricing { input: 2.0, output: 10.0, cache_5m: 2.50, cache_1h: 4.0, cache_read: 0.10 }
+    } else if m("claude-sonnet-5") {
         Pricing { input: 2.0, output: 10.0, cache_5m: 2.50, cache_1h: 4.0, cache_read: 0.20 }
     } else if m("claude-sonnet-4") || m("claude-sonnet-4-5") || m("claude-sonnet-4-6") {
         Pricing { input: 3.0, output: 15.0, cache_5m: 3.75, cache_1h: 6.0, cache_read: 0.30 }
+    // Haiku 5.5 short tier; see price_for_request.
+    } else if m(HAIKU_5_5) {
+        HAIKU_5_5_SHORT
     } else if m("claude-haiku-4-5") {
         Pricing { input: 1.0, output: 5.0, cache_5m: 1.25, cache_1h: 2.0, cache_read: 0.10 }
     } else if m("claude-haiku-3-5") || m("claude-3-5-haiku") {
         Pricing { input: 0.80, output: 4.0, cache_5m: 1.00, cache_1h: 1.60, cache_read: 0.08 }
     } else {
         Pricing::zero()
+    }
+}
+
+/// Per-request pricing: Haiku 5.5's long tier, else `price_for`.
+fn price_for_request(model: &str, prompt_tokens: u64) -> Pricing {
+    if is_model(model, HAIKU_5_5) && prompt_tokens > HAIKU_5_5_LONG_PROMPT_TOKENS {
+        HAIKU_5_5_LONG
+    } else {
+        price_for(model)
     }
 }
 
@@ -252,7 +278,9 @@ fn compute_tokens(model: &str, u: &Usage) -> Tokens {
         cache_1h_tokens: cache_1h,
         cost_usd: 0.0,
     };
-    t.cost_usd = t.cost_with(&price_for(model));
+    // Creation tokens as cost_with bills them: max(total, 5m + 1h).
+    let prompt_tokens = input + cache_total.max(cache_5m + cache_1h) + cache_read;
+    t.cost_usd = t.cost_with(&price_for_request(model, prompt_tokens));
     t
 }
 
@@ -265,6 +293,7 @@ fn reprice_bucket(b: &mut Bucket) -> bool {
     let mut unpriced = 0u64;
     for (model, t) in b.by_model.iter_mut() {
         if t.cost_usd == 0.0 && t.total_tokens() > 0 {
+            // No per-request prompt size here, so tiered models reprice at the short tier.
             let cost = t.cost_with(&price_for(model));
             if cost > 0.0 {
                 t.cost_usd = cost;
@@ -652,6 +681,12 @@ fn try_update(custom_path: Option<&str>, tz_spec: Option<&str>) -> std::io::Resu
 
     let mut cache_dirty = false;
     let mut summary_dirty = false;
+
+    // Reprice $0 history before folding, while its entries are still at cost 0.
+    if reprice_cache(&mut cache) {
+        cache_dirty = true;
+        summary_dirty = true;
+    }
 
     let transcripts = list_transcripts();
     let mut alive: HashMap<String, FileState> = HashMap::new();
