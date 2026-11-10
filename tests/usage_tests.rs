@@ -566,6 +566,42 @@ fn fable_5_1_uses_quarter_cache_read_rate() {
 }
 
 #[test]
+fn fable_5_2_pricing() {
+    let home = enabled("UTC");
+    // 1M tokens in each category: 8 + 40 + 10 + 16 + 0.20 = 74.20
+    let lines = vec![
+        assistant_line(
+            "2099-03-15T10:00:00Z", "s1", "/w",
+            "claude-fable-5-2", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+        assistant_line(
+            "2099-03-15T10:01:00Z", "s1", "/w",
+            "claude-mythos-5-2", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+        ),
+        // Bracket tag and date snapshot must not fall through to 5's rates.
+        assistant_line(
+            "2099-03-15T10:02:00Z", "s1", "/w",
+            "claude-fable-5-2[1m]", 1_000_000, 0, 0, 0, 0,
+        ),
+        assistant_line(
+            "2099-03-15T10:03:00Z", "s1", "/w",
+            "claude-fable-5-2-20261101", 0, 0, 0, 0, 1_000_000,
+        ),
+    ];
+    write_transcript(&home, "t1", &lines);
+    run(&home);
+
+    let s = summary(&home);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5-2"]), 74.20);
+    approx(cost(&s["totals"]["by_model"]["claude-mythos-5-2"]), 74.20);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5-2[1m]"]), 8.0);
+    approx(cost(&s["totals"]["by_model"]["claude-fable-5-2-20261101"]), 0.20);
+    approx(cost(&s["totals"]), 74.20 + 74.20 + 8.0 + 0.20);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
 fn sonnet_5_5_uses_half_sonnet_5_cache_read_rate() {
     let home = enabled("UTC");
     // 1M per category; only cache reads differ.
