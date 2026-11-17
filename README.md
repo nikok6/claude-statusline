@@ -99,6 +99,16 @@ Optionally create `~/.claude/statusline.json` to customize fields, layout, and c
 
 All fields are optional — missing fields use defaults. Colors can be [Catppuccin](https://catppuccin.com/) names or hex values (`#ff6b6b`).
 
+### Narrow terminals
+
+When a line is wider than the terminal (`$COLUMNS`, which Claude Code sets), `dir` and `branch` are shortened in the middle — longest first, down to 10 cells each — so fields after them (like `tokens`) aren't clipped:
+
+```
+slice-pba…n-service | fix/unlin…-reversal | +870 -100 | Opus | ██▄▁▁▁▁▁ 64k/200k
+```
+
+`right_margin` (default `4`) is how many columns to leave free at the right edge, for Claude Code's padding and notifications. The width only updates when the statusline re-runs; set `refreshInterval` in `settings.json` to pick up resizes sooner.
+
 ### Available fields
 
 | Field | Description |

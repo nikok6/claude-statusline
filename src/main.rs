@@ -7,9 +7,13 @@ mod git;
 mod process;
 mod tokens;
 mod usage;
+mod width;
 
 use colors::{COLOR_RESET, detect_flavor, resolve_colors};
 use std::io;
+
+/// Narrowest dir/branch gets when shrunk to fit the terminal width.
+const MIN_SHRUNK_WIDTH: usize = 10;
 
 fn get_dir_name(cwd: &str) -> String {
     std::path::Path::new(cwd)
@@ -116,15 +120,37 @@ fn main() {
         rate_7d: &rate_7d,
     };
 
-    for line_cfg in &cfg.lines {
-        let segments: Vec<String> = line_cfg.fields.iter().filter_map(|field| {
-            render_field(field, &ctx)
-        }).collect();
+    let available = width::terminal_columns().map(|c| c.saturating_sub(cfg.right_margin));
 
-        if !segments.is_empty() {
-            let sep = format!(" {}{}{} ", colors.sep, line_cfg.separator, COLOR_RESET);
-            println!("{}", segments.join(&sep));
+    for line_cfg in &cfg.lines {
+        let sep = format!(" {}{}{} ", colors.sep, line_cfg.separator, COLOR_RESET);
+        let render_line = |ctx: &RenderContext| -> String {
+            let segments: Vec<String> = line_cfg.fields.iter()
+                .filter_map(|field| render_field(field, ctx))
+                .collect();
+            segments.join(&sep)
+        };
+
+        let mut line = render_line(&ctx);
+        if line.is_empty() {
+            continue;
         }
+
+        // Too wide for the terminal: shrink dir/branch (the only variable-length
+        // fields) so later fields like tokens aren't clipped by Claude Code.
+        if let Some(available) = available {
+            let overflow = width::visible_width(&line).saturating_sub(available);
+            if overflow > 0 {
+                let shown_dir = if line_cfg.fields.iter().any(|f| f == "dir") { dir_name.as_str() } else { "" };
+                let shown_branch = if line_cfg.fields.iter().any(|f| f == "branch") { git_branch.as_str() } else { "" };
+                let (dw, bw) = width::fit_two(shown_dir, shown_branch, overflow, MIN_SHRUNK_WIDTH);
+                let dir_fit = width::truncate_middle(shown_dir, dw);
+                let branch_fit = width::truncate_middle(shown_branch, bw);
+                line = render_line(&RenderContext { dir_name: &dir_fit, git_branch: &branch_fit, ..ctx });
+            }
+        }
+
+        println!("{}", line);
     }
 
     if cfg.track_usage.enabled {

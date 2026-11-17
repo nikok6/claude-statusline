@@ -10,7 +10,13 @@ pub struct Config {
     pub colors: HashMap<String, String>,
     #[serde(default)]
     pub track_usage: TrackUsageConfig,
+    /// Columns kept free at the right edge when fitting a line to `$COLUMNS`
+    /// (Claude Code's padding and right-side notifications share the row).
+    #[serde(default = "default_right_margin")]
+    pub right_margin: usize,
 }
+
+fn default_right_margin() -> usize { 4 }
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct TrackUsageConfig {
@@ -61,6 +67,7 @@ pub fn default_config() -> Config {
             ("separator", "text"),
         ].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         track_usage: TrackUsageConfig::default(),
+        right_margin: default_right_margin(),
     }
 }
 
