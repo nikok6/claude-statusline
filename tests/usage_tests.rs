@@ -948,3 +948,92 @@ fn steady_state_run_does_not_rewrite_outputs() {
 
     fs::remove_dir_all(&home).ok();
 }
+
+/// One transcript line of an API call identified by `(id, request_id)`.
+/// Claude Code writes one such line per content block, each repeating the
+/// call's usage, with `output` possibly a mid-stream placeholder on early lines.
+fn call_line(ts: &str, session: &str, id: &str, request_id: &str, input: u64, output: u64) -> String {
+    let mut v: Value =
+        serde_json::from_str(&assistant_line(ts, session, "/w", "claude-opus-4-7", input, output, 0, 0, 0)).unwrap();
+    v["requestId"] = json!(request_id);
+    v["message"]["id"] = json!(id);
+    v.to_string()
+}
+
+#[test]
+fn repeated_lines_of_one_call_count_once() {
+    let home = enabled("UTC");
+    let ts = "2099-03-15T10:00:00Z";
+    write_transcript(
+        &home,
+        "t1",
+        &[
+            call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 1_000_000),
+            call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 1_000_000),
+            call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 1_000_000),
+            call_line(ts, "s1", "msg_b", "req_b", 1_000_000, 0),
+            call_line(ts, "s1", "msg_b", "req_b", 1_000_000, 0),
+        ],
+    );
+    run(&home);
+
+    // Two calls: 2M input * $5 + 1M output * $25.
+    let s = summary(&home);
+    assert_eq!(u(&s["totals"], "input_tokens"), 2_000_000);
+    assert_eq!(u(&s["totals"], "output_tokens"), 1_000_000);
+    approx(cost(&s["totals"]), 35.0);
+    approx(cost(bucket(&s, "daily", "2099-03-15")), 35.0);
+    approx(cost(&sessions(&home)["sessions"]["s1"]), 35.0);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn streaming_placeholder_output_is_replaced_by_final_count() {
+    let home = enabled("UTC");
+    let ts = "2099-03-15T10:00:00Z";
+    write_transcript(
+        &home,
+        "t1",
+        &[
+            call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 2),
+            call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 1_000_000),
+            call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 1_000_000),
+        ],
+    );
+    run(&home);
+
+    let s = summary(&home);
+    assert_eq!(u(&s["totals"], "input_tokens"), 1_000_000);
+    assert_eq!(u(&s["totals"], "output_tokens"), 1_000_000);
+    approx(cost(&s["totals"]), 30.0);
+    approx(cost(&s["totals"]["by_model"]["claude-opus-4-7"]), 30.0);
+
+    fs::remove_dir_all(&home).ok();
+}
+
+#[test]
+fn call_split_across_incremental_passes_counts_once() {
+    let home = enabled("UTC");
+    let ts = "2099-03-15T10:00:00Z";
+    let path = write_transcript(&home, "t1", &[call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 2)]);
+    run(&home);
+    assert_eq!(u(&summary(&home)["totals"], "output_tokens"), 2);
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    append_lines(
+        &path,
+        &[
+            call_line(ts, "s1", "msg_a", "req_a", 1_000_000, 1_000_000),
+            call_line(ts, "s1", "msg_b", "req_b", 1_000_000, 0),
+        ],
+    );
+    run(&home);
+
+    let s = summary(&home);
+    assert_eq!(u(&s["totals"], "input_tokens"), 2_000_000);
+    assert_eq!(u(&s["totals"], "output_tokens"), 1_000_000);
+    approx(cost(&s["totals"]), 35.0);
+
+    fs::remove_dir_all(&home).ok();
+}

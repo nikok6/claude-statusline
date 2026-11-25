@@ -26,11 +26,14 @@ struct TranscriptLine {
     #[serde(rename = "sessionId")]
     session_id: Option<String>,
     cwd: Option<String>,
+    #[serde(rename = "requestId")]
+    request_id: Option<String>,
     message: Option<Message>,
 }
 
 #[derive(Deserialize)]
 struct Message {
+    id: Option<String>,
     model: Option<String>,
     usage: Option<Usage>,
 }
@@ -120,6 +123,23 @@ impl Bucket {
 struct FileState {
     offset: u64,
     mtime_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_call: Option<LastCall>,
+}
+
+/// The most recent API call folded from a file. Claude Code writes one
+/// transcript line per content block (thinking / text / each tool_use), and
+/// every line repeats the usage of the same API response, so one call spans
+/// several consecutive lines sharing `(message.id, requestId)`. Only
+/// `output_tokens` differs between them: early lines may carry a mid-stream
+/// placeholder, the last carries the final count. A call is folded once on its
+/// first line, then topped up by any later output growth. Persisted so a call
+/// split across two incremental passes is still counted once.
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
+struct LastCall {
+    id: String,
+    request_id: String,
+    output_tokens: u64,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -281,10 +301,17 @@ fn compute_tokens(model: &str, u: &Usage) -> Tokens {
         cache_1h_tokens: cache_1h,
         cost_usd: 0.0,
     };
-    // Creation tokens as cost_with bills them: max(total, 5m + 1h).
-    let prompt_tokens = input + cache_total.max(cache_5m + cache_1h) + cache_read;
-    t.cost_usd = t.cost_with(&price_for_request(model, prompt_tokens));
+    t.cost_usd = t.cost_with(&request_pricing(model, &t));
     t
+}
+
+/// Pricing for one request's tokens; the tier depends only on its prompt size.
+fn request_pricing(model: &str, t: &Tokens) -> Pricing {
+    // Creation tokens as cost_with bills them: max(total, 5m + 1h).
+    let prompt_tokens = t.input_tokens
+        + t.cache_creation_tokens.max(t.cache_5m_tokens + t.cache_1h_tokens)
+        + t.cache_read_tokens;
+    price_for_request(model, prompt_tokens)
 }
 
 /// Re-derives cost for model entries that were folded while their model had no
@@ -444,6 +471,7 @@ fn process_new_lines(
     from_offset: u64,
     size: u64,
     cache: &mut Cache,
+    last_call: &mut Option<LastCall>,
     tz_offset_min: i32,
 ) -> Option<(u64, u32)> {
     let mut file = File::open(path).ok()?;
@@ -487,7 +515,35 @@ fn process_new_lines(
             continue;
         }
 
-        let tokens = compute_tokens(&model, &usage);
+        let mut tokens = compute_tokens(&model, &usage);
+
+        match (msg.id, entry.request_id) {
+            (Some(id), Some(request_id)) => {
+                match last_call.as_mut() {
+                    Some(lc) if lc.id == id && lc.request_id == request_id => {
+                        // Another line of an already-folded call: fold only
+                        // its output growth, if any.
+                        if tokens.output_tokens <= lc.output_tokens {
+                            continue;
+                        }
+                        let mut prev = tokens.clone();
+                        prev.output_tokens = lc.output_tokens;
+                        let prev_cost = prev.cost_with(&request_pricing(&model, &prev));
+                        lc.output_tokens = tokens.output_tokens;
+                        tokens = Tokens {
+                            output_tokens: tokens.output_tokens - prev.output_tokens,
+                            cost_usd: tokens.cost_usd - prev_cost,
+                            ..Tokens::default()
+                        };
+                    }
+                    _ => {
+                        *last_call = Some(LastCall { id, request_id, output_tokens: tokens.output_tokens });
+                    }
+                }
+            }
+            // No call identity to dedupe on: count the line as its own call.
+            _ => *last_call = None,
+        }
 
         cache.totals.add(&model, &tokens);
         cache.daily.entry(daily_key(date)).or_default().add(&model, &tokens);
@@ -702,21 +758,22 @@ fn try_update(custom_path: Option<&str>, tz_spec: Option<&str>) -> std::io::Resu
         let prev = cache.files.get(&key);
         let prev_offset = prev.map(|p| p.offset).unwrap_or(0);
         let prev_mtime = prev.map(|p| p.mtime_ms).unwrap_or(0);
+        let mut last_call = prev.and_then(|p| p.last_call.clone());
 
         // Skip only when truly unchanged: same mtime AND already folded to EOF.
         // Comparing the size guards against same-millisecond appends that an
         // mtime-only check would miss.
         if prev.is_some() && prev_mtime == mt && prev_offset >= sz {
-            alive.insert(key, FileState { offset: prev_offset, mtime_ms: mt });
+            alive.insert(key, FileState { offset: prev_offset, mtime_ms: mt, last_call });
             continue;
         }
 
-        if let Some((new_offset, folded)) = process_new_lines(&path, prev_offset, sz, &mut cache, tz_offset) {
+        if let Some((new_offset, folded)) = process_new_lines(&path, prev_offset, sz, &mut cache, &mut last_call, tz_offset) {
             cache_dirty = true;
             if folded > 0 {
                 summary_dirty = true;
             }
-            alive.insert(key, FileState { offset: new_offset, mtime_ms: mt });
+            alive.insert(key, FileState { offset: new_offset, mtime_ms: mt, last_call });
         }
     }
 
